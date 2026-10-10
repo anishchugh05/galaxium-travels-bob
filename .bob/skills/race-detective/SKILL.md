@@ -79,8 +79,8 @@ For each chosen finding:
 
 ```
 Before fix:
-  Successful bookings : 8   (capacity was 5 — oversold by 3)
-  Seats remaining     : -3
+  Successful bookings : 20  (capacity was 5 — oversold by 15)
+  Seats remaining     : 4   (lost updates: 20 decrements collapsed into 1)
 
 After fix:
   Successful bookings : 5   (exactly capacity)
