@@ -16,9 +16,11 @@ from schemas import (
     FlightOut,
     UserOut,
     UserRegistration,
+    WaitlistOut,
+    WaitlistRequest,
 )
 from seed import seed
-from services import booking, flight, user
+from services import booking, flight, user, waitlist
 
 # Load environment variables from .env file
 load_dotenv()
@@ -209,6 +211,43 @@ def get_user_endpoint(name: str, email: str, db: Session = Depends(get_db)):
     result = user.get_user(db, name, email)
     if isinstance(result, ErrorResponse):
         status = 404 if result.error_code == "USER_NOT_FOUND" else 422
+        raise HTTPException(status_code=status, detail=result.model_dump())
+    return result
+
+
+# ==================== WAITLIST ENDPOINTS ====================
+
+
+@app.post("/waitlist", response_model=WaitlistOut, status_code=201, tags=["Waitlist"])
+def join_waitlist_endpoint(request: WaitlistRequest, db: Session = Depends(get_db)):
+    """Join the waitlist for a specific flight and seat class.
+
+    Only allowed when the seat class is sold out.
+    Raises 404 if the flight or user is not found, 409 on any other conflict.
+    """
+    result = waitlist.join_waitlist(db, request.user_id, request.name, request.flight_id, request.seat_class)
+    if isinstance(result, ErrorResponse):
+        not_found = {"FLIGHT_NOT_FOUND", "USER_NOT_FOUND"}
+        status = 404 if result.error_code in not_found else 409
+        raise HTTPException(status_code=status, detail=result.model_dump())
+    return result
+
+
+@app.get("/waitlist/{user_id}", response_model=list[WaitlistOut], tags=["Waitlist"])
+def get_waitlist_endpoint(user_id: int, db: Session = Depends(get_db)):
+    """Get all active waitlist entries for a user."""
+    return waitlist.get_waitlist_for_user(db, user_id)
+
+
+@app.delete("/waitlist/{waitlist_id}", response_model=WaitlistOut, tags=["Waitlist"])
+def leave_waitlist_endpoint(waitlist_id: int, user_id: int, db: Session = Depends(get_db)):
+    """Leave the waitlist. user_id must match the entry owner.
+
+    Raises 404 if the entry is not found, 409 if it cannot be cancelled.
+    """
+    result = waitlist.leave_waitlist(db, waitlist_id, user_id)
+    if isinstance(result, ErrorResponse):
+        status = 404 if result.error_code == "WAITLIST_ENTRY_NOT_FOUND" else 409
         raise HTTPException(status_code=status, detail=result.model_dump())
     return result
 

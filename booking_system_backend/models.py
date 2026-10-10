@@ -1,6 +1,6 @@
 from enum import Enum
 
-from sqlalchemy import Column, ForeignKey, Integer, String
+from sqlalchemy import Column, ForeignKey, Index, Integer, String, text
 from sqlalchemy.orm import declarative_base
 
 Base = declarative_base()
@@ -38,3 +38,28 @@ class Booking(Base):
     booking_time = Column(String, nullable=False)
     seat_class = Column(String, nullable=False, default='economy')  # economy/business/galaxium
     price_paid = Column(Integer, nullable=False)  # Actual price at booking time
+
+
+class Waitlist(Base):
+    __tablename__ = 'waitlist'
+    waitlist_id = Column(Integer, primary_key=True, index=True, autoincrement=True)
+    user_id = Column(Integer, ForeignKey('users.user_id'), nullable=False)
+    flight_id = Column(Integer, ForeignKey('flights.flight_id'), nullable=False)
+    seat_class = Column(String, nullable=False)
+    # Lifecycle: waiting → promoting → booked (success)
+    #            waiting → promoting → waiting (seat gone in race)
+    #            waiting → promoting → failed  (other error; queue advances)
+    #            waiting → cancelled            (user left voluntarily)
+    status = Column(String, nullable=False, default='waiting')
+    added_at = Column(String, nullable=False)  # ISO datetime, same pattern as booking_time
+
+    # Partial unique index: only one 'waiting' entry allowed per user/flight/class.
+    # Entries in other statuses (booked, cancelled, failed) don't count — user can rejoin.
+    __table_args__ = (
+        Index(
+            'uq_waitlist_active',
+            'user_id', 'flight_id', 'seat_class',
+            unique=True,
+            sqlite_where=text("status = 'waiting'"),
+        ),
+    )

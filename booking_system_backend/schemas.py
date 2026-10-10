@@ -80,6 +80,24 @@ class UserOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
+class WaitlistRequest(BaseModel):
+    user_id: int
+    name: str  # Required: promotion re-validates user_id + name
+    flight_id: int
+    seat_class: SeatClass
+
+
+class WaitlistOut(BaseModel):
+    waitlist_id: int
+    user_id: int
+    flight_id: int
+    seat_class: str
+    status: str
+    added_at: str
+
+    model_config = ConfigDict(from_attributes=True)
+
+
 class ErrorResponse(BaseModel):
     success: bool = False
     error: str

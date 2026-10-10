@@ -6,6 +6,10 @@ from sqlalchemy.orm import Session
 from models import Booking, Flight, User
 from schemas import BookingOut, ErrorResponse, SeatClass
 
+# Imported lazily inside cancel_booking to avoid a module-level circular import.
+# waitlist.py imports models/schemas but not booking.py; booking.py imports
+# attempt_promotion from waitlist.py — one-directional, no cycle.
+
 # Price multipliers for each seat class
 SEAT_CLASS_MULTIPLIERS = {
     'economy': 1.0,
@@ -77,19 +81,30 @@ def book_flight(db: Session, user_id: int, name: str, flight_id: int, seat_class
     # Calculate price based on seat class (flight row already fetched above)
     price_paid = int(flight.base_price * SEAT_CLASS_MULTIPLIERS[seat_class])
 
-    # Create booking
+    new_booking = _create_booking(db, user_id, flight_id, seat_class, price_paid)
+    db.commit()
+    db.refresh(new_booking)
+    return BookingOut.model_validate(new_booking)
+
+
+def _create_booking(db: Session, user_id: int, flight_id: int, seat_class: str, price_paid: int) -> Booking:
+    """Append a new Booking to the session WITHOUT committing.
+
+    Callers are responsible for calling db.commit() and db.refresh() afterwards.
+    This separation allows attempt_promotion() to add the booking to the same
+    transaction as the waitlist status update and the cancel status change,
+    so all three writes land in a single atomic commit.
+    """
     new_booking = Booking(
         user_id=user_id,
         flight_id=flight_id,
         status="booked",
         booking_time=datetime.now(tz=timezone.utc).isoformat(),
         seat_class=seat_class,
-        price_paid=price_paid
+        price_paid=price_paid,
     )
     db.add(new_booking)
-    db.commit()
-    db.refresh(new_booking)
-    return BookingOut.model_validate(new_booking)
+    return new_booking
 
 
 def cancel_booking(db: Session, booking_id: int) -> BookingOut | ErrorResponse:
@@ -126,15 +141,20 @@ def cancel_booking(db: Session, booking_id: int) -> BookingOut | ErrorResponse:
                     f"Cannot safely restore inventory. Cancellation refused."
         )
 
-    # Atomically restore the seat counter, then mark the booking cancelled.
-    # Both writes happen in the same commit so the DB is never left in a
-    # state where the seat was restored but the booking is still 'booked'.
+    # Atomically restore the seat counter.
     db.execute(
         update(Flight)
         .where(Flight.flight_id == booking.flight_id)
         .values({seat_col.key: seat_col + 1})
         .execution_options(synchronize_session=False)
     )
+
+    # Attempt to promote the first waiting user for this flight+class.
+    # All three writes (seat+1, promotion booking, waitlist status) will be
+    # covered by the single db.commit() below — nothing is committed yet.
+    from services.waitlist import attempt_promotion  # noqa: PLC0415 (local import, avoids module-level cycle)
+    attempt_promotion(db, booking.flight_id, booking.seat_class)
+
     booking.status = "cancelled"
     db.commit()
     db.refresh(booking)

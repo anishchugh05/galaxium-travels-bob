@@ -15,9 +15,10 @@ from sqlalchemy.orm import sessionmaker
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from models import Base, Booking, Flight, User
+from models import Base, Booking, Flight, User, Waitlist
 from schemas import BookingOut, ErrorResponse
 from services import booking as booking_service
+from services import waitlist as waitlist_service
 
 ECONOMY_SEATS = 5
 CONCURRENT_REQUESTS = 20
@@ -260,4 +261,155 @@ class TestCancelRace:
         assert seats_restored == CANCEL_BOOKINGS, (
             f"Expected {CANCEL_BOOKINGS} seats restored, got {seats_restored} — "
             f"lost-update race dropped {CANCEL_BOOKINGS - seats_restored} increment(s)"
+        )
+
+WAITLIST_PAIRS = 10  # number of booking+waiter pairs to create
+
+
+@pytest.fixture()
+def seeded_db_for_waitlist_race(file_db):
+    """
+    Seed:
+      - 1 flight with 0 economy seats (all sold out)
+      - 10 'booker' users each with one 'booked' booking
+      - 10 'waiter' users each with one 'waiting' waitlist entry
+    All 20 users are distinct so no per-user serialisation can mask the race.
+    """
+    from datetime import datetime, timezone
+
+    SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=file_db)
+    session = SessionLocal()
+
+    flight = Flight(
+        origin="Neptune", destination="Pluto",
+        departure_time="2099-08-01 06:00", arrival_time="2099-08-01 20:00",
+        base_price=999_000,
+        economy_seats_available=0,
+        business_seats_available=0,
+        galaxium_seats_available=0,
+    )
+    session.add(flight)
+    session.flush()
+
+    bookers = [
+        User(name=f"Booker{i}", email=f"booker{i}@race.test")
+        for i in range(WAITLIST_PAIRS)
+    ]
+    waiters = [
+        User(name=f"Waiter{i}", email=f"waiter{i}@race.test")
+        for i in range(WAITLIST_PAIRS)
+    ]
+    session.add_all(bookers + waiters)
+    session.flush()
+
+    bookings = [
+        Booking(
+            user_id=b.user_id,
+            flight_id=flight.flight_id,
+            status="booked",
+            booking_time=datetime.now(tz=timezone.utc).isoformat(),
+            seat_class="economy",
+            price_paid=999_000,
+        )
+        for b in bookers
+    ]
+    session.add_all(bookings)
+    session.flush()
+
+    waitlist_entries = [
+        Waitlist(
+            user_id=w.user_id,
+            flight_id=flight.flight_id,
+            seat_class="economy",
+            status="waiting",
+            added_at=datetime.now(tz=timezone.utc).isoformat(),
+        )
+        for w in waiters
+    ]
+    session.add_all(waitlist_entries)
+    session.commit()
+
+    flight_id = flight.flight_id
+    booking_ids = [b.booking_id for b in bookings]
+    waiter_ids = [w.user_id for w in waiters]
+
+    session.close()
+
+    yield file_db, flight_id, booking_ids, waiter_ids
+
+    # Teardown
+    cleanup = SessionLocal()
+    cleanup.query(Waitlist).delete()
+    cleanup.query(Booking).delete()
+    cleanup.query(Flight).delete()
+    cleanup.query(User).delete()
+    cleanup.commit()
+    cleanup.close()
+
+
+class TestWaitlistPromotionRace:
+    def test_concurrent_cancels_promote_all_waiters(self, seeded_db_for_waitlist_race):
+        """
+        Cancel 10 bookings concurrently on a flight that has 10 waitlisted users.
+
+        Expected (with atomic promotion):
+          - All 10 cancels succeed.
+          - Exactly 10 promotion bookings are created (one per waiter).
+          - No waitlist entry stays in 'waiting' or 'promoting' — all are 'booked'.
+          - economy_seats_available stays at 0 (each freed seat is immediately claimed).
+
+        Without the atomic MIN-subquery claim, two concurrent cancels could both
+        promote the same waiter → double-booking; or a cancel could miss a waiter
+        entirely → leftover 'waiting' entry + leaked seat.
+        """
+        engine, flight_id, booking_ids, waiter_ids = seeded_db_for_waitlist_race
+        SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+
+        results = []
+        with ThreadPoolExecutor(max_workers=WAITLIST_PAIRS) as pool:
+            futures = [
+                pool.submit(_attempt_cancel, engine, bid)
+                for bid in booking_ids
+            ]
+            for fut in as_completed(futures):
+                results.append(fut.result())
+
+        cancel_successes = [r for r in results if isinstance(r, BookingOut) and r.status == "cancelled"]
+        errors = [r for r in results if isinstance(r, ErrorResponse)]
+
+        final = SessionLocal()
+
+        final_flight = final.query(Flight).filter(Flight.flight_id == flight_id).first()
+        seats_left = final_flight.economy_seats_available
+
+        # Promoted bookings: 'booked' rows for the waiter user_ids
+        promoted_bookings = final.query(Booking).filter(
+            Booking.user_id.in_(waiter_ids),
+            Booking.status == "booked",
+        ).count()
+
+        leftover_waiting = final.query(Waitlist).filter(
+            Waitlist.flight_id == flight_id,
+            Waitlist.status.in_(["waiting", "promoting"]),
+        ).count()
+
+        final.close()
+
+        print(f"\n  Cancels succeeded   : {len(cancel_successes)}")
+        print(f"  Errors              : {len(errors)}")
+        print(f"  Promotions created  : {promoted_bookings}")
+        print(f"  Leftover waiting    : {leftover_waiting}")
+        print(f"  Seats remaining     : {seats_left}")
+
+        assert len(cancel_successes) == WAITLIST_PAIRS, (
+            f"Expected {WAITLIST_PAIRS} cancels to succeed, got {len(cancel_successes)}"
+        )
+        assert promoted_bookings == WAITLIST_PAIRS, (
+            f"Expected {WAITLIST_PAIRS} promotion bookings, got {promoted_bookings}"
+        )
+        assert leftover_waiting == 0, (
+            f"Expected 0 leftover waiting entries, got {leftover_waiting}"
+        )
+        assert seats_left == 0, (
+            f"Expected 0 seats remaining (all re-claimed by promotions), got {seats_left}"
         )
