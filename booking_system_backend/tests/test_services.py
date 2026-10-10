@@ -444,6 +444,53 @@ class TestBookingService:
         assert isinstance(result, ErrorResponse)
         assert result.error_code == "ALREADY_CANCELLED"
 
+
+    def test_cancel_booking_invalid_seat_class(self, db_session):
+        """Booking with a corrupt seat_class must be refused, not silently cancelled,
+        and the booking must remain in 'booked' status (no partial state)."""
+        db_session.add(User(name="Test User", email="test@example.com"))
+        db_session.add(Flight(
+            origin="Earth",
+            destination="Mars",
+            departure_time="2099-01-01 09:00",
+            arrival_time="2099-01-01 17:00",
+            base_price=1000000,
+            economy_seats_available=0,
+            business_seats_available=0,
+            galaxium_seats_available=0
+        ))
+        db_session.commit()
+
+        user_obj = db_session.query(User).first()
+        flight_obj = db_session.query(Flight).first()
+
+        db_session.add(Booking(
+            user_id=user_obj.user_id,
+            flight_id=flight_obj.flight_id,
+            status="booked",
+            booking_time="2099-01-01 10:00",
+            seat_class="warp_class",  # not a real seat class
+            price_paid=1000000
+        ))
+        db_session.commit()
+
+        booking_obj = db_session.query(Booking).first()
+        seats_before = flight_obj.economy_seats_available
+        result = booking.cancel_booking(db_session, booking_obj.booking_id)
+
+        # Must return an error, not a BookingOut
+        assert isinstance(result, ErrorResponse)
+        assert result.error_code == "INVALID_SEAT_CLASS"
+
+        # Booking must still be 'booked' — no partial state
+        db_session.refresh(booking_obj)
+        assert booking_obj.status == "booked"
+
+        # Inventory must be unchanged
+        db_session.refresh(flight_obj)
+        assert flight_obj.economy_seats_available == seats_before
+
+
     def test_get_bookings_success(self, db_session):
         """Test getting user bookings."""
         db_session.add(User(name="Test User", email="test@example.com"))

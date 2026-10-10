@@ -109,24 +109,32 @@ def cancel_booking(db: Session, booking_id: int) -> BookingOut | ErrorResponse:
             details=f"Booking {booking_id} is already cancelled and cannot be cancelled again. The booking status is currently '{booking.status}'. If you need to make changes, please contact support."
         )
 
-    # Atomically restore the seat counter.
-    # Using UPDATE avoids the same lost-update race as the booking path:
-    # two concurrent cancels on different bookings for the same flight would
-    # each read the pre-increment value and overwrite each other without this.
+    # Resolve the seat column before touching any state.
+    # An unrecognised seat_class means data corruption; refuse to cancel
+    # rather than silently lose a seat from inventory.
     seat_col = {
         'economy': Flight.economy_seats_available,
         'business': Flight.business_seats_available,
         'galaxium': Flight.galaxium_seats_available,
     }.get(booking.seat_class)
 
-    if seat_col is not None:
-        db.execute(
-            update(Flight)
-            .where(Flight.flight_id == booking.flight_id)
-            .values({seat_col.key: seat_col + 1})
-            .execution_options(synchronize_session=False)
+    if seat_col is None:
+        return ErrorResponse(
+            error="Invalid seat class on booking",
+            error_code="INVALID_SEAT_CLASS",
+            details=f"Booking {booking_id} has unrecognised seat class '{booking.seat_class}'. "
+                    f"Cannot safely restore inventory. Cancellation refused."
         )
 
+    # Atomically restore the seat counter, then mark the booking cancelled.
+    # Both writes happen in the same commit so the DB is never left in a
+    # state where the seat was restored but the booking is still 'booked'.
+    db.execute(
+        update(Flight)
+        .where(Flight.flight_id == booking.flight_id)
+        .values({seat_col.key: seat_col + 1})
+        .execution_options(synchronize_session=False)
+    )
     booking.status = "cancelled"
     db.commit()
     db.refresh(booking)
