@@ -109,19 +109,14 @@ def _create_booking(db: Session, user_id: int, flight_id: int, seat_class: str, 
 
 def cancel_booking(db: Session, booking_id: int) -> BookingOut | ErrorResponse:
     """Cancel an existing booking by its booking_id and restore seat to correct class."""
+    # Phase 1: verify the booking exists and read its seat_class before attempting
+    # the atomic status transition.  We only read here — no state is changed yet.
     booking = db.query(Booking).filter(Booking.booking_id == booking_id).first()
     if not booking:
         return ErrorResponse(
             error="Booking not found",
             error_code="BOOKING_NOT_FOUND",
             details=f"Booking with ID {booking_id} not found. The booking may have been deleted or the booking_id may be incorrect. Please verify the booking_id or check if the booking exists."
-        )
-
-    if booking.status == "cancelled":
-        return ErrorResponse(
-            error="Booking already cancelled",
-            error_code="ALREADY_CANCELLED",
-            details=f"Booking {booking_id} is already cancelled and cannot be cancelled again. The booking status is currently '{booking.status}'. If you need to make changes, please contact support."
         )
 
     # Resolve the seat column before touching any state.
@@ -141,7 +136,27 @@ def cancel_booking(db: Session, booking_id: int) -> BookingOut | ErrorResponse:
                     f"Cannot safely restore inventory. Cancellation refused."
         )
 
-    # Atomically restore the seat counter.
+    # Phase 2: atomically transition status booked → cancelled.
+    # The WHERE status='booked' guard means only ONE concurrent caller will match;
+    # the other will see rowcount=0 and get the ALREADY_CANCELLED error.
+    # This eliminates the check-then-act race: no separate read-check-write sequence.
+    status_result = db.execute(
+        update(Booking)
+        .where(Booking.booking_id == booking_id, Booking.status == "booked")
+        .values(status="cancelled")
+        .execution_options(synchronize_session=False)
+    )
+
+    if status_result.rowcount == 0:
+        return ErrorResponse(
+            error="Booking already cancelled",
+            error_code="ALREADY_CANCELLED",
+            details=f"Booking {booking_id} is already cancelled and cannot be cancelled again. "
+                    f"If you need to make changes, please contact support."
+        )
+
+    # Phase 3: restore the seat counter — safe to do unconditionally now because
+    # the atomic status UPDATE above guarantees exactly one caller reaches this point.
     db.execute(
         update(Flight)
         .where(Flight.flight_id == booking.flight_id)
@@ -150,12 +165,11 @@ def cancel_booking(db: Session, booking_id: int) -> BookingOut | ErrorResponse:
     )
 
     # Attempt to promote the first waiting user for this flight+class.
-    # All three writes (seat+1, promotion booking, waitlist status) will be
-    # covered by the single db.commit() below — nothing is committed yet.
+    # All writes (seat+1, promotion booking, waitlist status) are covered by the
+    # single db.commit() below — nothing is committed yet.
     from services.waitlist import attempt_promotion  # noqa: PLC0415 (local import, avoids module-level cycle)
     attempt_promotion(db, booking.flight_id, booking.seat_class)
 
-    booking.status = "cancelled"
     db.commit()
     db.refresh(booking)
     return BookingOut.model_validate(booking)
