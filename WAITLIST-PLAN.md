@@ -271,7 +271,7 @@ fixture (in-memory SQLite + StaticPool). Concurrency tests for promotion go in
 
 ### Sub-Task 5 — Frontend: Join Waitlist on Flights Page
 
-**Status:** `[ ] pending`
+**Status:** `[x] done`
 
 **Intent**  
 On the Flights page, when a seat class is sold out, show a "Join Waitlist" button
@@ -312,7 +312,7 @@ flight+class via the new backend endpoint.
 
 ### Sub-Task 6 — Frontend: Waitlist Status on My Bookings Page
 
-**Status:** `[ ] pending`
+**Status:** `[x] done`
 
 **Intent**  
 Show the user's active waitlist entries on the My Bookings page so they can see where

@@ -1,6 +1,6 @@
-import type { Flight, SeatClass } from '../../types';
+import type { Flight, SeatClass, WaitlistEntry } from '../../types';
 import { Card, Button } from '../common';
-import { Plane, Clock, Users, Crown, Rocket } from 'lucide-react';
+import { Plane, Clock, Users, Crown, Rocket, Clock3 } from 'lucide-react';
 import { formatCurrency, formatDate, formatTime, calculateDuration } from '../../utils/formatters';
 import { motion } from 'framer-motion';
 import { Link } from 'react-router-dom';
@@ -9,9 +9,21 @@ import { getDestinationByName } from '../../data/destinations';
 interface FlightCardProps {
   flight: Flight;
   onBook: (flight: Flight) => void;
+  /** Active waitlist entries for the current user (all flights). Used to show per-class status. */
+  waitlistEntries?: WaitlistEntry[];
+  /** Called when the user clicks "Join Waitlist" for a specific class. */
+  onJoinWaitlist?: (flightId: number, seatClass: SeatClass) => void;
+  /** The seat class currently being joined (shows loading state on that button). */
+  joiningWaitlistClass?: SeatClass | null;
 }
 
-export const FlightCard = ({ flight, onBook }: FlightCardProps) => {
+export const FlightCard = ({
+  flight,
+  onBook,
+  waitlistEntries,
+  onJoinWaitlist,
+  joiningWaitlistClass,
+}: FlightCardProps) => {
   const totalSeats = flight.economy_seats_available + flight.business_seats_available + flight.galaxium_seats_available;
   const isSoldOut = totalSeats === 0;
   const destData = getDestinationByName(flight.destination);
@@ -124,29 +136,59 @@ export const FlightCard = ({ flight, onBook }: FlightCardProps) => {
               const Icon = seatClass.icon;
               const isClassSoldOut = seatClass.seats === 0;
               const isLowSeats = seatClass.seats <= 2 && seatClass.seats > 0;
-              
+
+              // Is the current user already waiting for this flight+class?
+              const isOnWaitlist = waitlistEntries?.some(
+                (e) =>
+                  e.flight_id === flight.flight_id &&
+                  e.seat_class === seatClass.class &&
+                  e.status === 'waiting'
+              ) ?? false;
+              const isJoining =
+                joiningWaitlistClass === seatClass.class;
+
               return (
                 <div
                   key={seatClass.class}
                   className={`p-3 rounded-lg border ${seatClass.borderColor} ${seatClass.bgColor} ${
-                    isClassSoldOut ? 'opacity-50' : ''
+                    isClassSoldOut && !onJoinWaitlist ? 'opacity-50' : ''
                   }`}
                 >
-                  <div className="flex items-center justify-between">
-                    <div className="flex items-center gap-2">
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="flex items-center gap-2 min-w-0">
                       <Icon size={18} className={seatClass.color} />
-                      <span className="font-medium text-star-white">{seatClass.name}</span>
+                      <span className="font-medium text-star-white truncate">{seatClass.name}</span>
                     </div>
-                    <div className="text-right">
+                    <div className="text-right shrink-0">
                       <div className={`text-lg font-bold ${seatClass.color}`}>
                         {formatCurrency(seatClass.price)}
                       </div>
-                      <div className="flex items-center gap-1 text-xs">
-                        <Users size={12} className={isLowSeats ? 'text-solar-orange' : 'text-star-white/60'} />
-                        <span className={isLowSeats ? 'text-solar-orange font-semibold' : 'text-star-white/60'}>
-                          {isClassSoldOut ? 'Sold Out' : `${seatClass.seats} left`}
-                        </span>
-                      </div>
+                      {isClassSoldOut && onJoinWaitlist ? (
+                        /* Logged-in user: show waitlist button per class */
+                        isOnWaitlist ? (
+                          <div className="flex items-center justify-end gap-1 text-xs text-star-white/60 mt-1">
+                            <Clock3 size={12} />
+                            <span>On Waitlist</span>
+                          </div>
+                        ) : (
+                          <Button
+                            size="sm"
+                            variant="secondary"
+                            onClick={() => onJoinWaitlist(flight.flight_id, seatClass.class)}
+                            isLoading={isJoining}
+                            className="mt-1 text-xs py-1 px-2 h-auto"
+                          >
+                            Join Waitlist
+                          </Button>
+                        )
+                      ) : (
+                        <div className="flex items-center gap-1 text-xs mt-1">
+                          <Users size={12} className={isLowSeats ? 'text-solar-orange' : 'text-star-white/60'} />
+                          <span className={isLowSeats ? 'text-solar-orange font-semibold' : 'text-star-white/60'}>
+                            {isClassSoldOut ? 'Sold Out' : `${seatClass.seats} left`}
+                          </span>
+                        </div>
+                      )}
                     </div>
                   </div>
                 </div>

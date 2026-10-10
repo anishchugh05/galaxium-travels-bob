@@ -73,6 +73,23 @@ export interface UserContextType {
   logout: () => void;
 }
 
+// Waitlist types
+export interface WaitlistEntry {
+  waitlist_id: number;
+  user_id: number;
+  flight_id: number;
+  seat_class: SeatClass;
+  status: 'waiting' | 'promoting' | 'booked' | 'cancelled' | 'failed';
+  added_at: string;
+}
+
+export interface WaitlistRequest {
+  user_id: number;
+  name: string;
+  flight_id: number;
+  seat_class: SeatClass;
+}
+
 // Java Inventory Hold Service types
 
 export interface Quote {

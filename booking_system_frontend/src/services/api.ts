@@ -8,6 +8,8 @@ import type {
   ErrorResponse,
   Quote,
   Hold,
+  WaitlistEntry,
+  WaitlistRequest,
 } from '../types';
 
 // Create axios instance with base configuration
@@ -142,6 +144,40 @@ export const cancelBooking = async (
 ): Promise<Booking | ErrorResponse> => {
   const response = await api.post<Booking | ErrorResponse>(
     `/cancel/${bookingId}`
+  );
+  return response.data;
+};
+
+// ==================== Waitlist Endpoints ====================
+
+/**
+ * Join the waitlist for a sold-out flight/class
+ */
+export const joinWaitlist = async (
+  data: WaitlistRequest
+): Promise<WaitlistEntry | ErrorResponse> => {
+  const response = await api.post<WaitlistEntry | ErrorResponse>('/waitlist', data);
+  return response.data;
+};
+
+/**
+ * Get all active waitlist entries for a user
+ */
+export const getUserWaitlist = async (userId: number): Promise<WaitlistEntry[]> => {
+  const response = await api.get<WaitlistEntry[]>(`/waitlist/${userId}`);
+  return response.data;
+};
+
+/**
+ * Leave the waitlist (cancel a waiting entry)
+ */
+export const leaveWaitlist = async (
+  waitlistId: number,
+  userId: number
+): Promise<WaitlistEntry | ErrorResponse> => {
+  const response = await api.delete<WaitlistEntry | ErrorResponse>(
+    `/waitlist/${waitlistId}`,
+    { params: { user_id: userId } }
   );
   return response.data;
 };

@@ -1,10 +1,11 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
-import type { Booking, Flight, StoredHold, ErrorResponse } from '../types';
+import type { Booking, Flight, StoredHold, ErrorResponse, WaitlistEntry } from '../types';
 import { LoadingSpinner, Modal, Button } from '../components/common';
 import { BookingCard } from '../components/bookings/BookingCard';
 import { HoldCard } from '../components/bookings/HoldCard';
-import { getUserBookings, getFlights, cancelBooking, getHold, isErrorResponse } from '../services/api';
+import { WaitlistCard } from '../components/bookings/WaitlistCard';
+import { getUserBookings, getFlights, cancelBooking, getHold, isErrorResponse, getUserWaitlist, leaveWaitlist } from '../services/api';
 import { getStoredHolds, removeHold } from '../utils/holdStorage';
 import { useUser } from '../hooks/useUserContext';
 import { AlertCircle } from 'lucide-react';
@@ -17,10 +18,12 @@ export const MyBookings = () => {
   const [bookings, setBookings] = useState<Booking[]>([]);
   const [flights, setFlights] = useState<Flight[]>([]);
   const [activeHolds, setActiveHolds] = useState<StoredHold[]>([]);
+  const [waitlistEntries, setWaitlistEntries] = useState<WaitlistEntry[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [cancellingId, setCancellingId] = useState<number | null>(null);
   const [showCancelModal, setShowCancelModal] = useState(false);
   const [bookingToCancel, setBookingToCancel] = useState<number | null>(null);
+  const [leavingWaitlistId, setLeavingWaitlistId] = useState<number | null>(null);
 
   const loadHolds = useCallback(async () => {
     if (!user) return;
@@ -66,12 +69,14 @@ export const MyBookings = () => {
 
     setIsLoading(true);
     try {
-      const [bookingsData, flightsData] = await Promise.all([
+      const [bookingsData, flightsData, waitlistData] = await Promise.all([
         getUserBookings(user.user_id),
         getFlights(),
+        getUserWaitlist(user.user_id),
       ]);
       setBookings(bookingsData);
       setFlights(flightsData);
+      setWaitlistEntries(waitlistData);
       await loadHolds();
     } catch (err) {
       toast.error('Failed to load bookings');
@@ -92,6 +97,25 @@ export const MyBookings = () => {
   const handleCancelClick = (bookingId: number) => {
     setBookingToCancel(bookingId);
     setShowCancelModal(true);
+  };
+
+  const handleLeaveWaitlist = async (waitlistId: number) => {
+    if (!user) return;
+    setLeavingWaitlistId(waitlistId);
+    try {
+      const result = await leaveWaitlist(waitlistId, user.user_id);
+      if (isErrorResponse(result)) {
+        toast.error(result.details ?? result.error);
+        return;
+      }
+      toast.success('Removed from waitlist');
+      loadData();
+    } catch (err) {
+      const error = err as ErrorResponse;
+      toast.error(error.details ?? error.error ?? 'Failed to leave waitlist');
+    } finally {
+      setLeavingWaitlistId(null);
+    }
   };
 
   const handleConfirmCancel = async () => {
@@ -127,8 +151,13 @@ export const MyBookings = () => {
     return flights.find((f) => f.flight_id === hold.flightId);
   };
 
+  const getFlightForWaitlist = (entry: WaitlistEntry): Flight | undefined => {
+    return flights.find((f) => f.flight_id === entry.flight_id);
+  };
+
   const activeBookings = bookings.filter((b) => b.status === 'booked');
   const pastBookings = bookings.filter((b) => b.status !== 'booked');
+  const waitingEntries = waitlistEntries.filter((e) => e.status === 'waiting');
 
   if (!user) {
     return null;
@@ -182,8 +211,37 @@ export const MyBookings = () => {
             </motion.div>
           )}
 
+          {/* Waitlist Entries */}
+          {waitingEntries.length > 0 && (
+            <motion.div
+              initial={{ opacity: 0, y: 20 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ delay: 0.07 }}
+            >
+              <div className="flex items-center gap-3 mb-4">
+                <h2 className="text-2xl font-bold text-solar-orange">
+                  Waitlist ({waitingEntries.length})
+                </h2>
+                <span className="text-xs text-star-white/50 bg-solar-orange/10 border border-solar-orange/30 px-2 py-1 rounded-full">
+                  You'll be notified when a seat opens up
+                </span>
+              </div>
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                {waitingEntries.map((entry) => (
+                  <WaitlistCard
+                    key={entry.waitlist_id}
+                    entry={entry}
+                    flight={getFlightForWaitlist(entry)}
+                    onLeave={handleLeaveWaitlist}
+                    isLeaving={leavingWaitlistId === entry.waitlist_id}
+                  />
+                ))}
+              </div>
+            </motion.div>
+          )}
+
           {/* No content at all */}
-          {bookings.length === 0 && activeHolds.length === 0 && (
+          {bookings.length === 0 && activeHolds.length === 0 && waitingEntries.length === 0 && (
             <motion.div
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}

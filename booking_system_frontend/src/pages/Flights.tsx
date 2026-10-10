@@ -1,11 +1,11 @@
 import { useState, useEffect, useCallback } from 'react';
-import type { Flight, ErrorResponse } from '../types';
+import type { Flight, ErrorResponse, WaitlistEntry, SeatClass } from '../types';
 import { LoadingSpinner } from '../components/common';
 import { FlightCard } from '../components/flights/FlightCard';
 import { FlightFilters } from '../components/flights/FlightFilters';
 import { UserIdentification } from '../components/user/UserIdentification';
 import { BookingModal } from '../components/bookings/BookingModal';
-import { getFlights } from '../services/api';
+import { getFlights, getUserWaitlist, joinWaitlist, isErrorResponse } from '../services/api';
 import type { FlightFilters as FlightFiltersType } from '../services/api';
 import { useUser } from '../hooks/useUserContext';
 import { Search } from 'lucide-react';
@@ -21,6 +21,8 @@ export const Flights = () => {
   const [selectedFlight, setSelectedFlight] = useState<Flight | null>(null);
   const [showUserModal, setShowUserModal] = useState(false);
   const [showBookingModal, setShowBookingModal] = useState(false);
+  const [waitlistEntries, setWaitlistEntries] = useState<WaitlistEntry[]>([]);
+  const [joiningWaitlistClass, setJoiningWaitlistClass] = useState<SeatClass | null>(null);
 
   const loadFlights = useCallback(async (retryCount = 0) => {
     const MAX_RETRIES = 3;
@@ -50,10 +52,29 @@ export const Flights = () => {
     }
   }, [filters]);
 
+  // Load the user's waitlist entries (only when a user is identified)
+  const loadWaitlist = useCallback(async () => {
+    if (!user) {
+      setWaitlistEntries([]);
+      return;
+    }
+    try {
+      const entries = await getUserWaitlist(user.user_id);
+      setWaitlistEntries(entries);
+    } catch {
+      // Non-critical — silently ignore; the button degrades to "Join Waitlist"
+    }
+  }, [user]);
+
   // Fetch flights when filters change
   useEffect(() => {
     loadFlights();
   }, [loadFlights]);
+
+  // Refresh waitlist entries when the user changes
+  useEffect(() => {
+    loadWaitlist();
+  }, [loadWaitlist]);
 
   const handleBookFlight = (flight: Flight) => {
     setSelectedFlight(flight);
@@ -73,8 +94,32 @@ export const Flights = () => {
   };
 
   const handleBookingSuccess = () => {
-    // Reload flights to get updated seat availability
     loadFlights();
+  };
+
+  const handleJoinWaitlist = async (flightId: number, seatClass: SeatClass) => {
+    if (!user) return;
+    setJoiningWaitlistClass(seatClass);
+    try {
+      const result = await joinWaitlist({
+        user_id: user.user_id,
+        name: user.name,
+        flight_id: flightId,
+        seat_class: seatClass,
+      });
+      if (isErrorResponse(result)) {
+        toast.error(result.details ?? result.error);
+        return;
+      }
+      toast.success(`You're on the waitlist for ${seatClass} class!`);
+      // Refresh waitlist entries so the button switches to "On Waitlist"
+      await loadWaitlist();
+    } catch (err) {
+      const error = err as ErrorResponse;
+      toast.error(error.details ?? error.error ?? 'Failed to join waitlist');
+    } finally {
+      setJoiningWaitlistClass(null);
+    }
   };
 
   const handleResetFilters = () => {
@@ -165,6 +210,9 @@ export const Flights = () => {
               key={flight.flight_id}
               flight={flight}
               onBook={handleBookFlight}
+              waitlistEntries={user ? waitlistEntries : undefined}
+              onJoinWaitlist={user ? handleJoinWaitlist : undefined}
+              joiningWaitlistClass={joiningWaitlistClass}
             />
           ))}
         </motion.div>
