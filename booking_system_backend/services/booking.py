@@ -1,5 +1,6 @@
 from datetime import datetime, timezone
 
+from sqlalchemy import update
 from sqlalchemy.orm import Session
 
 from models import Booking, Flight, User
@@ -32,22 +33,8 @@ def book_flight(db: Session, user_id: int, name: str, flight_id: int, seat_class
             details=f"The specified flight_id {flight_id} does not exist in our system. Please check the flight_id or use list_flights to see available flights."
         )
 
-    # Check seats available for the specific class
-    if seat_class == 'economy':
-        seats_available = flight.economy_seats_available
-    elif seat_class == 'business':
-        seats_available = flight.business_seats_available
-    else:  # galaxium
-        seats_available = flight.galaxium_seats_available
-    
-    if seats_available < 1:
-        return ErrorResponse(
-            error=f"No {seat_class} seats available",
-            error_code="NO_SEATS_AVAILABLE",
-            details=f"The flight has no available seats in {seat_class} class. Please try a different class or check other flights."
-        )
-
-    # Check user exists and name matches
+    # Check user exists and name matches (before the atomic decrement to avoid
+    # consuming a seat for an invalid user)
     user = db.query(User).filter(User.user_id == user_id, User.name == name).first()
     if not user:
         existing_user = db.query(User).filter(User.user_id == user_id).first()
@@ -64,16 +51,31 @@ def book_flight(db: Session, user_id: int, name: str, flight_id: int, seat_class
                 details=f"User with ID {user_id} is not registered in our system. The user might need to register first, or you may need to check if the user_id is correct."
             )
 
-    # Calculate price based on seat class
-    price_paid = int(flight.base_price * SEAT_CLASS_MULTIPLIERS[seat_class])
+    # Atomically decrement the seat counter only if a seat is still available.
+    # Using a single UPDATE … WHERE seats > 0 eliminates the read-check-decrement
+    # race: if two sessions race, only one will match the WHERE clause.
+    seat_col = {
+        'economy': Flight.economy_seats_available,
+        'business': Flight.business_seats_available,
+        'galaxium': Flight.galaxium_seats_available,
+    }[seat_class]
 
-    # Decrement the correct seat class counter
-    if seat_class == 'economy':
-        flight.economy_seats_available -= 1
-    elif seat_class == 'business':
-        flight.business_seats_available -= 1
-    else:  # galaxium
-        flight.galaxium_seats_available -= 1
+    result = db.execute(
+        update(Flight)
+        .where(Flight.flight_id == flight_id, seat_col > 0)
+        .values({seat_col.key: seat_col - 1})
+        .execution_options(synchronize_session=False)
+    )
+
+    if result.rowcount == 0:
+        return ErrorResponse(
+            error=f"No {seat_class} seats available",
+            error_code="NO_SEATS_AVAILABLE",
+            details=f"The flight has no available seats in {seat_class} class. Please try a different class or check other flights."
+        )
+
+    # Calculate price based on seat class (flight row already fetched above)
+    price_paid = int(flight.base_price * SEAT_CLASS_MULTIPLIERS[seat_class])
 
     # Create booking
     new_booking = Booking(
@@ -107,15 +109,23 @@ def cancel_booking(db: Session, booking_id: int) -> BookingOut | ErrorResponse:
             details=f"Booking {booking_id} is already cancelled and cannot be cancelled again. The booking status is currently '{booking.status}'. If you need to make changes, please contact support."
         )
 
-    # Restore seat to the correct class
-    flight = db.query(Flight).filter(Flight.flight_id == booking.flight_id).first()
-    if flight:
-        if booking.seat_class == 'economy':
-            flight.economy_seats_available += 1
-        elif booking.seat_class == 'business':
-            flight.business_seats_available += 1
-        elif booking.seat_class == 'galaxium':
-            flight.galaxium_seats_available += 1
+    # Atomically restore the seat counter.
+    # Using UPDATE avoids the same lost-update race as the booking path:
+    # two concurrent cancels on different bookings for the same flight would
+    # each read the pre-increment value and overwrite each other without this.
+    seat_col = {
+        'economy': Flight.economy_seats_available,
+        'business': Flight.business_seats_available,
+        'galaxium': Flight.galaxium_seats_available,
+    }.get(booking.seat_class)
+
+    if seat_col is not None:
+        db.execute(
+            update(Flight)
+            .where(Flight.flight_id == booking.flight_id)
+            .values({seat_col.key: seat_col + 1})
+            .execution_options(synchronize_session=False)
+        )
 
     booking.status = "cancelled"
     db.commit()
