@@ -22,8 +22,8 @@ from sqlalchemy.orm import sessionmaker
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from models import Base, Booking, Flight, User
+from schemas import BookingOut, ErrorResponse
 from services.booking import cancel_booking
-from schemas import ErrorResponse
 
 INITIAL_SEATS = 1   # one economy seat; we'll book it then try to cancel twice
 WORKERS = 2         # exactly two concurrent cancels of the same booking_id
@@ -141,7 +141,6 @@ class TestDoubleCancelRace:
             ]
             results = [f.result() for f in as_completed(futures)]
 
-        from schemas import BookingOut
         successes = [r for r in results if isinstance(r, BookingOut)]
         errors    = [r for r in results if isinstance(r, ErrorResponse)]
 

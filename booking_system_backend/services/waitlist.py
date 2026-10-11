@@ -156,14 +156,26 @@ def leave_waitlist(
             details=f"Waitlist entry {waitlist_id} belongs to a different user.",
         )
 
-    if entry.status != 'waiting':
+    # Atomically transition status waiting → cancelled.
+    # The WHERE status='waiting' guard means only ONE concurrent caller will match;
+    # the other will see rowcount=0 and get the CANNOT_LEAVE error.
+    # This eliminates the check-then-act race (same pattern as cancel_booking).
+    result = db.execute(
+        update(Waitlist)
+        .where(Waitlist.waitlist_id == waitlist_id, Waitlist.status == 'waiting')
+        .values(status='cancelled')
+        .execution_options(synchronize_session=False)
+    )
+
+    if result.rowcount == 0:
+        # Re-read to report the current status in the error message.
+        db.refresh(entry)
         return ErrorResponse(
             error="Cannot leave waitlist",
             error_code="CANNOT_LEAVE",
             details=f"Entry {waitlist_id} has status '{entry.status}' and cannot be cancelled. Only 'waiting' entries can be left.",
         )
 
-    entry.status = 'cancelled'
     db.commit()
     db.refresh(entry)
     return WaitlistOut.model_validate(entry)
@@ -224,14 +236,14 @@ def attempt_promotion(db: Session, flight_id: int, seat_class: str) -> None:
             # find the next available waiter.
             continue
 
-        # --- Step 3: look up the entry we just claimed by its exact id --------
+        # --- Step 3a: look up the entry we just claimed by its exact id --------
         entry = db.query(Waitlist).filter(Waitlist.waitlist_id == next_id).first()
 
         if entry is None:
             # Should not happen, but be defensive.
             break
 
-        # --- Step 3: look up the user's current name from the DB ---------------
+        # --- Step 3b: look up the user's current name from the DB ---------------
         user = db.query(User).filter(User.user_id == entry.user_id).first()
         if user is None:
             # User was deleted after joining the waitlist — skip.

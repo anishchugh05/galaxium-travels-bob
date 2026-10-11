@@ -4,7 +4,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from models import Booking, Flight, User
-from schemas import ErrorResponse
+from schemas import BookingOut, ErrorResponse
 from services import booking, flight, user
 
 
@@ -368,7 +368,14 @@ class TestBookingService:
         assert result.error_code == "NAME_MISMATCH"
 
     def test_cancel_booking_success(self, db_session):
-        """Test successful booking cancellation."""
+        """Test successful booking cancellation.
+
+        Books via book_flight() so the seat counter is atomically decremented
+        before cancelling — this ensures the restore assertion reflects a real
+        round-trip through the full booking/cancel path, not an artificially
+        seeded fixture.
+        """
+        initial_seats = 5
         db_session.add(User(name="Test User", email="test@example.com"))
         db_session.add(Flight(
             origin="Earth",
@@ -376,7 +383,7 @@ class TestBookingService:
             departure_time="2099-01-01 09:00",
             arrival_time="2099-01-01 17:00",
             base_price=1000000,
-            economy_seats_available=4,
+            economy_seats_available=initial_seats,
             business_seats_available=3,
             galaxium_seats_available=1
         ))
@@ -385,24 +392,22 @@ class TestBookingService:
         user_obj = db_session.query(User).first()
         flight_obj = db_session.query(Flight).first()
 
-        db_session.add(Booking(
-            user_id=user_obj.user_id,
-            flight_id=flight_obj.flight_id,
-            status="booked",
-            booking_time="2099-01-01 10:00",
-            seat_class="economy",
-            price_paid=1000000
-        ))
-        db_session.commit()
+        # Book via the service so the seat counter is properly decremented.
+        book_result = booking.book_flight(
+            db_session, user_obj.user_id, user_obj.name, flight_obj.flight_id
+        )
+        assert hasattr(book_result, 'booking_id'), f"Unexpected error: {book_result}"
 
-        booking_obj = db_session.query(Booking).first()
-        result = booking.cancel_booking(db_session, booking_obj.booking_id)
+        db_session.refresh(flight_obj)
+        assert flight_obj.economy_seats_available == initial_seats - 1
+
+        # Now cancel — seat must return to initial_seats.
+        result = booking.cancel_booking(db_session, book_result.booking_id)
 
         assert result.status == "cancelled"
 
-        # Verify seat was restored
         db_session.refresh(flight_obj)
-        assert flight_obj.economy_seats_available == 5
+        assert flight_obj.economy_seats_available == initial_seats
 
     def test_cancel_booking_not_found(self, db_session):
         """Test cancelling non-existent booking."""
@@ -489,6 +494,56 @@ class TestBookingService:
         # Inventory must be unchanged
         db_session.refresh(flight_obj)
         assert flight_obj.economy_seats_available == seats_before
+
+
+
+    def test_cancel_booking_succeeds_when_promotion_raises(self, db_session, monkeypatch):
+        """If attempt_promotion() raises unexpectedly, cancel_booking() must still:
+          - return a BookingOut with status='cancelled'
+          - restore the seat counter (+1)
+          - not propagate the exception to the caller
+
+        The savepoint in cancel_booking() absorbs the promotion failure without
+        rolling back the status update or the seat restore.
+        """
+        db_session.add(User(name="Test User", email="test@example.com"))
+        db_session.add(Flight(
+            origin="Earth",
+            destination="Mars",
+            departure_time="2099-01-01 09:00",
+            arrival_time="2099-01-01 17:00",
+            base_price=1000000,
+            economy_seats_available=1,
+            business_seats_available=0,
+            galaxium_seats_available=0,
+        ))
+        db_session.commit()
+
+        user_obj = db_session.query(User).first()
+        flight_obj = db_session.query(Flight).first()
+
+        # Book via the service so the seat counter is atomically decremented.
+        book_result = booking.book_flight(
+            db_session, user_obj.user_id, user_obj.name, flight_obj.flight_id
+        )
+        assert hasattr(book_result, 'booking_id'), f"Unexpected: {book_result}"
+
+        db_session.refresh(flight_obj)
+        assert flight_obj.economy_seats_available == 0
+
+        # Force attempt_promotion to raise so the savepoint path is exercised.
+        import services.waitlist as wl_mod
+        monkeypatch.setattr(wl_mod, 'attempt_promotion', lambda *a, **kw: (_ for _ in ()).throw(RuntimeError("simulated promotion crash")))
+
+        result = booking.cancel_booking(db_session, book_result.booking_id)
+
+        # Cancel must succeed despite the promotion crash.
+        assert isinstance(result, BookingOut)
+        assert result.status == "cancelled"
+
+        # Seat must be restored.
+        db_session.refresh(flight_obj)
+        assert flight_obj.economy_seats_available == 1
 
 
     def test_get_bookings_success(self, db_session):

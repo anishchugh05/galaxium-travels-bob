@@ -1,7 +1,10 @@
+import logging
 from datetime import datetime, timezone
 
 from sqlalchemy import update
 from sqlalchemy.orm import Session
+
+log = logging.getLogger(__name__)
 
 from models import Booking, Flight, User
 from schemas import BookingOut, ErrorResponse, SeatClass
@@ -165,10 +168,23 @@ def cancel_booking(db: Session, booking_id: int) -> BookingOut | ErrorResponse:
     )
 
     # Attempt to promote the first waiting user for this flight+class.
-    # All writes (seat+1, promotion booking, waitlist status) are covered by the
-    # single db.commit() below — nothing is committed yet.
+    # All promotion writes run inside a savepoint so that if promotion raises
+    # unexpectedly, only the savepoint is rolled back — the cancel (status +
+    # seat restore) still commits.  This prevents a promotion bug from leaving
+    # the booking permanently cancelled with the seat counter un-restored.
     from services.waitlist import attempt_promotion  # noqa: PLC0415 (local import, avoids module-level cycle)
-    attempt_promotion(db, booking.flight_id, booking.seat_class)
+    try:
+        with db.begin_nested():  # SAVEPOINT
+            attempt_promotion(db, booking.flight_id, booking.seat_class)
+    except Exception:  # noqa: BLE001
+        log.exception(
+            "attempt_promotion failed for flight_id=%s seat_class=%s; "
+            "cancel will still complete but no waitlist promotion occurred.",
+            booking.flight_id,
+            booking.seat_class,
+        )
+        # Savepoint already rolled back by the context manager.
+        # The outer transaction still holds: status='cancelled' + seat+1.
 
     db.commit()
     db.refresh(booking)

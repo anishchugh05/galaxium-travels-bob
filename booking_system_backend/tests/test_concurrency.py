@@ -16,7 +16,7 @@ from sqlalchemy.orm import sessionmaker
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from models import Base, Booking, Flight, User, Waitlist
-from schemas import BookingOut, ErrorResponse
+from schemas import BookingOut, ErrorResponse, WaitlistOut
 from services import booking as booking_service
 from services import waitlist as waitlist_service
 
@@ -137,8 +137,7 @@ class TestOversellRace:
         print(f"  Seats remaining     : {seats_left}")
         print(f"  Oversold by         : {max(0, len(successes) - ECONOMY_SEATS)}")
 
-        # These two assertions define correct behaviour.
-        # Both are expected to FAIL before the race condition is fixed.
+        # These two assertions verify the atomic fix works correctly.
         assert len(successes) == ECONOMY_SEATS, (
             f"Expected exactly {ECONOMY_SEATS} successful bookings, got {len(successes)} — "
             f"flight was oversold by {len(successes) - ECONOMY_SEATS} seat(s)"
@@ -412,4 +411,119 @@ class TestWaitlistPromotionRace:
         )
         assert seats_left == 0, (
             f"Expected 0 seats remaining (all re-claimed by promotions), got {seats_left}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# leave_waitlist concurrent-leave race
+# ---------------------------------------------------------------------------
+
+@pytest.fixture()
+def seeded_db_for_leave_race(file_db):
+    """
+    Seed one user, one sold-out flight, and one 'waiting' waitlist entry.
+    Two concurrent leave_waitlist() calls will race on that single entry.
+    """
+    from datetime import datetime, timezone
+
+    SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=file_db)
+    session = SessionLocal()
+
+    flight = Flight(
+        origin="Venus", destination="Mercury",
+        departure_time="2099-09-01 07:00", arrival_time="2099-09-01 15:00",
+        base_price=300_000,
+        economy_seats_available=0,
+        business_seats_available=0,
+        galaxium_seats_available=0,
+    )
+    session.add(flight)
+    session.flush()
+
+    user = User(name="RacyLeaver", email="racyleaver@race.test")
+    session.add(user)
+    session.flush()
+
+    entry = Waitlist(
+        user_id=user.user_id,
+        flight_id=flight.flight_id,
+        seat_class="economy",
+        status="waiting",
+        added_at=datetime.now(tz=timezone.utc).isoformat(),
+    )
+    session.add(entry)
+    session.commit()
+
+    entry_id = entry.waitlist_id
+    user_id = user.user_id
+
+    session.close()
+
+    yield file_db, entry_id, user_id
+
+    # Teardown
+    cleanup = SessionLocal()
+    cleanup.query(Waitlist).delete()
+    cleanup.query(Flight).delete()
+    cleanup.query(User).delete()
+    cleanup.commit()
+    cleanup.close()
+
+
+def _attempt_leave(engine, waitlist_id: int, user_id: int) -> WaitlistOut | ErrorResponse:
+    """Called from a worker thread — opens its own session."""
+    SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+    db = SessionLocal()
+    try:
+        return waitlist_service.leave_waitlist(db, waitlist_id=waitlist_id, user_id=user_id)
+    finally:
+        db.close()
+
+
+class TestLeaveWaitlistRace:
+    def test_concurrent_leaves_exactly_one_succeeds(self, seeded_db_for_leave_race):
+        """
+        Two concurrent calls to leave_waitlist() on the same 'waiting' entry.
+
+        Expected (with atomic UPDATE):
+          - Exactly ONE call succeeds (returns WaitlistOut with status='cancelled').
+          - Exactly ONE call is rejected (CANNOT_LEAVE).
+          - The entry ends up 'cancelled' in the DB.
+
+        Before the fix (check-then-act), both callers see status='waiting',
+        both pass the guard, both commit — resulting in two 'success' responses.
+        """
+        engine, entry_id, user_id = seeded_db_for_leave_race
+        SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+
+        WORKERS = 2
+        with ThreadPoolExecutor(max_workers=WORKERS) as pool:
+            futures = [
+                pool.submit(_attempt_leave, engine, entry_id, user_id)
+                for _ in range(WORKERS)
+            ]
+            results = [f.result() for f in as_completed(futures)]
+
+        successes = [r for r in results if isinstance(r, WaitlistOut)]
+        errors    = [r for r in results if isinstance(r, ErrorResponse)]
+
+        # Re-read final state with a fresh session.
+        check = SessionLocal()
+        entry = check.query(Waitlist).filter_by(waitlist_id=entry_id).first()
+        final_status = entry.status
+        check.close()
+
+        print(f"\n  Successful leaves : {len(successes)}")
+        print(f"  Rejected (error)  : {len(errors)}")
+        print(f"  Final status      : {final_status}")
+
+        assert len(successes) == 1, (
+            f"Expected exactly 1 successful leave, got {len(successes)}. "
+            f"Errors: {[e.error_code for e in errors]}"
+        )
+        assert len(errors) == 1, (
+            f"Expected exactly 1 CANNOT_LEAVE error, got {len(errors)}"
+        )
+        assert final_status == "cancelled", (
+            f"Expected entry to be 'cancelled', got '{final_status}'"
         )
