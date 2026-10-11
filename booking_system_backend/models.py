@@ -61,5 +61,6 @@ class Waitlist(Base):
             'user_id', 'flight_id', 'seat_class',
             unique=True,
             sqlite_where=text("status = 'waiting'"),
+            postgresql_where=text("status = 'waiting'"),
         ),
     )
