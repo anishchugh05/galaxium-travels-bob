@@ -14,10 +14,10 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Instant;
-import java.time.Year;
 import java.time.temporal.ChronoUnit;
 import java.util.Map;
 import java.util.Optional;
+import java.util.UUID;
 
 @Service
 @RequiredArgsConstructor
@@ -45,7 +45,9 @@ public class HoldService {
             throw new IllegalStateException("Quote has expired");
         }
 
-        // Generate hold ID
+        // Generate a collision-free hold ID using UUID.
+        // The old count()+1 pattern races: two concurrent callers read the same count,
+        // compute the same ID, and one gets a primary-key collision on save().
         String holdId = generateHoldId();
 
         // Create hold
@@ -75,32 +77,45 @@ public class HoldService {
     public Hold confirmHold(String holdId) {
         log.info("Confirming hold {}", holdId);
 
+        // Verify hold exists (needed to read quoteId later; no lock yet).
         Hold hold = holdRepository.findById(holdId)
                 .orElseThrow(() -> new IllegalArgumentException("Hold not found: " + holdId));
 
-        // Check if already confirmed
+        // Fast-path: already confirmed — idempotent return.
         if (hold.getStatus() == Hold.HoldStatus.CONFIRMED) {
             log.info("Hold {} already confirmed, returning existing booking reference", holdId);
             return hold;
         }
 
-        // Check if hold is still valid
-        if (hold.getStatus() != Hold.HoldStatus.HELD) {
-            throw new IllegalStateException("Hold is not in HELD status: " + hold.getStatus());
+        // Atomically claim the hold: HELD → CONFIRMING.
+        // Only ONE concurrent caller can win this UPDATE because the WHERE clause
+        // requires status=HELD.  The second caller sees rowcount=0 and throws.
+        // The reservedUntil > now guard also prevents confirming an expired hold.
+        Instant now = Instant.now();
+        int claimed = holdRepository.claimForConfirm(holdId, now);
+        if (claimed == 0) {
+            // Re-read to give a useful status in the error message.
+            Hold current = holdRepository.findById(holdId)
+                    .orElseThrow(() -> new IllegalArgumentException("Hold not found: " + holdId));
+            if (current.getStatus() == Hold.HoldStatus.HELD) {
+                // Status is still HELD but reservedUntil has passed.
+                throw new IllegalStateException("Hold has expired");
+            }
+            throw new IllegalStateException("Hold is not in HELD status: " + current.getStatus());
         }
 
-        if (hold.getReservedUntil().isBefore(Instant.now())) {
-            hold.setStatus(Hold.HoldStatus.EXPIRED);
-            holdRepository.save(hold);
-            throw new IllegalStateException("Hold has expired");
-        }
+        // We exclusively own the CONFIRMING slot — reload to get fresh state.
+        // Use a new variable (claimedHold) so 'hold' stays effectively final for lambdas above.
+        final Hold claimedHold = holdRepository.findById(holdId)
+                .orElseThrow(() -> new IllegalStateException("Hold disappeared after claim: " + holdId));
 
         // Get quote details
-        Quote quote = quoteRepository.findById(hold.getQuoteId())
-                .orElseThrow(() -> new IllegalStateException("Quote not found: " + hold.getQuoteId()));
+        Quote quote = quoteRepository.findById(claimedHold.getQuoteId())
+                .orElseThrow(() -> new IllegalStateException("Quote not found: " + claimedHold.getQuoteId()));
 
         try {
-            // Call Python backend to create booking
+            // Call Python backend to create booking.
+            // Only ONE caller ever reaches this point for a given holdId.
             Map<String, Object> holdData = Map.of(
                     "travelerId", quote.getTravelerId(),
                     "travelerName", quote.getTravelerName(),
@@ -110,12 +125,11 @@ public class HoldService {
 
             PythonBackendClient.BookingResponse booking = pythonBackendClient.createBookingFromHold(holdData);
 
-            // Update hold with booking reference
-            hold.setStatus(Hold.HoldStatus.CONFIRMED);
-            hold.setExternalBookingReference(String.valueOf(booking.getBookingId()));
-            Hold confirmedHold = holdRepository.save(hold);
+            // Transition CONFIRMING → CONFIRMED.
+            claimedHold.setStatus(Hold.HoldStatus.CONFIRMED);
+            claimedHold.setExternalBookingReference(String.valueOf(booking.getBookingId()));
+            Hold confirmedHold = holdRepository.save(claimedHold);
 
-            // Audit event
             createAuditEvent("HOLD", holdId, "CONFIRMED",
                     String.format("Hold confirmed, booking ID: %s", booking.getBookingId()));
 
@@ -124,9 +138,10 @@ public class HoldService {
 
         } catch (PythonBackendClient.BookingCreationException e) {
             log.error("Failed to create booking for hold {}", holdId, e);
-            hold.setStatus(Hold.HoldStatus.CONFIRMATION_FAILED);
-            hold.setErrorMessage(e.getMessage());
-            Hold failedHold = holdRepository.save(hold);
+            // Revert CONFIRMING → HELD so the caller can retry.
+            claimedHold.setStatus(Hold.HoldStatus.HELD);
+            claimedHold.setErrorMessage(e.getMessage());
+            holdRepository.save(claimedHold);
 
             createAuditEvent("HOLD", holdId, "CONFIRMATION_FAILED", e.getMessage());
 
@@ -155,9 +170,10 @@ public class HoldService {
     }
 
     private String generateHoldId() {
-        int year = Year.now().getValue();
-        long count = holdRepository.count() + 1;
-        return String.format("H-%d-%06d", year, count);
+        // UUID-based: collision-free under any concurrency, no DB round-trip required.
+        // The old count()+1 pattern raced: two concurrent callers read the same count,
+        // computed the same ID, and one got a primary-key violation on save().
+        return "H-" + UUID.randomUUID().toString().replace("-", "").substring(0, 12).toUpperCase();
     }
 
     private void createAuditEvent(String entityType, String entityId, String eventType, String details) {

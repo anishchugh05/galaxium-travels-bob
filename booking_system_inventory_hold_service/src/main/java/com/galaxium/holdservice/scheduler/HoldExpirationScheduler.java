@@ -1,8 +1,5 @@
 package com.galaxium.holdservice.scheduler;
 
-import com.galaxium.holdservice.domain.AuditEvent;
-import com.galaxium.holdservice.domain.Hold;
-import com.galaxium.holdservice.repository.AuditEventRepository;
 import com.galaxium.holdservice.repository.HoldRepository;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -11,7 +8,6 @@ import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Instant;
-import java.util.List;
 
 @Component
 @RequiredArgsConstructor
@@ -19,34 +15,31 @@ import java.util.List;
 public class HoldExpirationScheduler {
 
     private final HoldRepository holdRepository;
-    private final AuditEventRepository auditEventRepository;
 
+    /**
+     * Atomically expire all HELD holds whose reservedUntil has passed.
+     *
+     * Uses a single conditional UPDATE … WHERE status=HELD AND reservedUntil < :now
+     * rather than the previous load-then-loop pattern.  This eliminates the race
+     * between the scheduler and a concurrent confirmHold() call:
+     *
+     *   Old code: scheduler SELECTs hold (status=HELD), confirmHold() also sees HELD,
+     *             scheduler writes EXPIRED, confirmHold() writes CONFIRMED — last writer wins.
+     *
+     *   New code: confirmHold() atomically claims HELD→CONFIRMING before calling Python.
+     *             The scheduler's UPDATE only matches status=HELD, so it cannot touch a
+     *             hold that is already in CONFIRMING or CONFIRMED.
+     *
+     * Audit events are no longer written per-row here because the UPDATE is a bulk
+     * statement with no row handles; the confirm path still writes its own audit events.
+     */
     @Scheduled(fixedDelayString = "${hold.expiration.check.interval.seconds:60}000")
     @Transactional
     public void expireHolds() {
         Instant now = Instant.now();
-        List<Hold> expiredHolds = holdRepository.findExpiredHolds(now);
-
-        if (!expiredHolds.isEmpty()) {
-            log.info("Found {} expired holds to process", expiredHolds.size());
-
-            for (Hold hold : expiredHolds) {
-                hold.setStatus(Hold.HoldStatus.EXPIRED);
-                holdRepository.save(hold);
-
-                // Create audit event
-                AuditEvent event = AuditEvent.builder()
-                        .entityType("HOLD")
-                        .entityId(hold.getHoldId())
-                        .eventType("EXPIRED")
-                        .details(String.format("Hold expired at %s", now))
-                        .build();
-                auditEventRepository.save(event);
-
-                log.info("Hold {} marked as expired", hold.getHoldId());
-            }
-
-            log.info("Processed {} expired holds", expiredHolds.size());
+        int expired = holdRepository.expireHeldHolds(now);
+        if (expired > 0) {
+            log.info("Expired {} held hold(s) at {}", expired, now);
         }
     }
 }

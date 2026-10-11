@@ -11,9 +11,9 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Instant;
-import java.time.Year;
 import java.time.temporal.ChronoUnit;
 import java.util.Optional;
+import java.util.UUID;
 
 @Service
 @RequiredArgsConstructor
@@ -70,9 +70,10 @@ public class QuoteService {
     }
 
     private String generateQuoteId() {
-        int year = Year.now().getValue();
-        long count = quoteRepository.count() + 1;
-        return String.format("Q-%d-%06d", year, count);
+        // UUID-based: collision-free under any concurrency, no DB round-trip required.
+        // The old count()+1 pattern raced: two concurrent callers read the same count,
+        // computed the same ID, and one got a primary-key violation on save().
+        return "Q-" + UUID.randomUUID().toString().replace("-", "").substring(0, 12).toUpperCase();
     }
 
     private void createAuditEvent(String entityType, String entityId, String eventType, String details) {

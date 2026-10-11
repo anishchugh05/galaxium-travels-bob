@@ -60,6 +60,7 @@ public class Hold {
 
     public enum HoldStatus {
         HELD,
+        CONFIRMING,   // transient: claimed by one confirm caller; prevents double-confirm
         EXPIRED,
         CONFIRMED,
         RELEASED,
