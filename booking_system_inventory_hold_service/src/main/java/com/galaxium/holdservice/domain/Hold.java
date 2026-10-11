@@ -3,14 +3,20 @@ package com.galaxium.holdservice.domain;
 import jakarta.persistence.*;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
-import lombok.Data;
+import lombok.EqualsAndHashCode;
+import lombok.Getter;
 import lombok.NoArgsConstructor;
+import lombok.Setter;
+import lombok.ToString;
 
 import java.time.Instant;
 
 @Entity
 @Table(name = "holds")
-@Data
+@Getter
+@Setter
+@ToString
+@EqualsAndHashCode(of = "holdId")   // JPA best practice: identity based on PK only
 @Builder
 @NoArgsConstructor
 @AllArgsConstructor

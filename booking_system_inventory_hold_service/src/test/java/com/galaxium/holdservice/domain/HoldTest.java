@@ -479,9 +479,12 @@ class HoldTest {
     }
 
     @Test
-    @DisplayName("Should test equality with different statuses")
+    @DisplayName("Two Hold objects with the same holdId must be equal regardless of status")
     void testEqualityWithDifferentStatus() {
-        // Arrange
+        // JPA-correct contract: equality is based on the primary key (holdId) only.
+        // Two objects representing the same database row must be equal even if their
+        // mutable fields (status, updatedAt, etc.) differ — this mirrors how JPA
+        // manages entity identity across transactions and lazy-loading proxies.
         Hold hold1 = Hold.builder()
                 .holdId("hold-100")
                 .quoteId("quote-200")
@@ -494,8 +497,9 @@ class HoldTest {
                 .status(Hold.HoldStatus.CONFIRMED)
                 .build();
 
-        // Act & Assert
-        assertNotEquals(hold1, hold2);
+        // Act & Assert — same PK → same entity, regardless of status
+        assertEquals(hold1, hold2);
+        assertEquals(hold1.hashCode(), hold2.hashCode());
     }
 
     @Test
