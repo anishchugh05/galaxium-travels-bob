@@ -6,18 +6,18 @@ Three services, one database. The React frontend talks exclusively to the Python
 
 ```mermaid
 graph TD
-    FE["React frontend\n:5173"]
+    FE["React frontend<br/>:5173"]
 
     subgraph Python ["Python FastAPI :8001"]
-        REST["REST API\n/flights, /bookings,\n/waitlist, /users"]
-        PROXY["Hold proxy\n/quotes, /holds"]
+        REST["REST API<br/>/flights, /bookings,<br/>/waitlist, /users"]
+        PROXY["Hold proxy<br/>/quotes, /holds"]
         INTERNAL["/internal/bookings/from-hold"]
-        DB[("SQLite\nbooking.db")]
+        DB[("SQLite<br/>booking.db")]
     end
 
     subgraph Java ["Java Spring Boot :8080"]
-        HAPI["Hold API\n/api/v1/quotes\n/api/v1/holds"]
-        HDB[("SQLite/H2\nholds.db")]
+        HAPI["Hold API<br/>/api/v1/quotes<br/>/api/v1/holds"]
+        HDB[("SQLite/H2<br/>holds.db")]
     end
 
     FE -->|"REST"| REST
@@ -26,7 +26,7 @@ graph TD
     INTERNAL --- DB
     PROXY -->|"HTTP proxy"| HAPI
     HAPI --- HDB
-    HAPI -->|"POST /internal/bookings/from-hold\n(on confirm)"| INTERNAL
+    HAPI -->|"POST /internal/bookings/from-hold<br/>(on confirm)"| INTERNAL
 ```
 
 ---
@@ -108,12 +108,12 @@ The `CONFIRMING` state is the key concurrency guard: only one caller can win the
 stateDiagram-v2
     [*] --> HELD : createHold()
 
-    HELD --> CONFIRMING : claimForConfirm()\nUPDATE WHERE status=HELD\n(only one caller wins)
-    HELD --> EXPIRED : scheduler bulk UPDATE\nWHERE reservedUntil < now
+    HELD --> CONFIRMING : claimForConfirm()<br/>UPDATE WHERE status=HELD<br/>(only one caller wins)
+    HELD --> EXPIRED : scheduler bulk UPDATE<br/>WHERE reservedUntil before now
     HELD --> RELEASED : releaseHold()
 
     CONFIRMING --> CONFIRMED : Python booking created ✓
-    CONFIRMING --> HELD : Python call failed\n(revert so caller can retry)
+    CONFIRMING --> HELD : Python call failed<br/>(revert so caller can retry)
 
     CONFIRMED --> [*]
     EXPIRED --> [*]
@@ -130,12 +130,12 @@ A partial unique index (`WHERE status = 'waiting'`) enforces at most one active 
 stateDiagram-v2
     [*] --> waiting : join_waitlist()
 
-    waiting --> promoting : attempt_promotion()\nUPDATE WHERE status='waiting'\n(atomic claim by MIN waitlist_id)
-    waiting --> cancelled : leave_waitlist()\nUPDATE WHERE status='waiting'
+    waiting --> promoting : attempt_promotion()<br/>UPDATE WHERE status='waiting'<br/>(atomic claim by MIN waitlist_id)
+    waiting --> cancelled : leave_waitlist()<br/>UPDATE WHERE status='waiting'
 
-    promoting --> booked : seat secured +\nbooking created
-    promoting --> waiting : NO_SEATS_AVAILABLE\n(seat grabbed by direct booker;\nuser keeps queue position)
-    promoting --> failed : unexpected error\n(skip; try next waiter)
+    promoting --> booked : seat secured +<br/>booking created
+    promoting --> waiting : NO_SEATS_AVAILABLE<br/>(seat grabbed by direct booker;<br/>user keeps queue position)
+    promoting --> failed : unexpected error<br/>(skip; try next waiter)
 
     booked --> [*]
     cancelled --> [*]
