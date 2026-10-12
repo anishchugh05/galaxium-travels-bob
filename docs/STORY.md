@@ -42,7 +42,11 @@ The fix was a single conditional UPDATE in Agent mode: `UPDATE flights … WHERE
 
 With the backend's concurrency correct, I designed the waitlist feature in Bob Plan mode: join when a class is sold out; on cancel, the first waiter gets the seat in the same transaction. Bob's initial plan had several problems I had to push back on — `position = MAX + 1` for ordering (itself racy), a full unique constraint across all statuses (would block users from rejoining), a promotion path that used `with_for_update()` (silently ignored by SQLite), a promotion path that called `book_flight()` internally (which commits, breaking the single-transaction guarantee), and resetting every failed promotion to `'waiting'` regardless of error type (would jam the queue). The full list of challenges and the decisions we landed on are in [DECISIONS.md — Decisions 2–5](DECISIONS.md#2-fifo-by-waitlist_id). Tests caught a real promotion bug during implementation: the promotion re-fetched the wrong row. The finished feature shipped as commits c699575 (backend) and eb66f99 (frontend), with a working Alice/Bob demo — Alice books the last seat, Bob joins the waitlist, Alice cancels, Bob is automatically promoted.
 
-![Waitlist feature demo — Alice cancels, Bob is promoted](images/06-waitlist.png) <!-- TODO screenshot: frontend showing waitlist join, then promotion after cancel -->
+| 1. Alice books the last Galaxium seat | 2. Bob joins the waitlist |
+|---|---|
+| ![Alice booked](images/06a-alice-booked.png) | ![Bob waiting](images/06b-bob-waiting.png) |
+| **3. Alice cancels** | **4. Bob is promoted automatically (new Booking #22)** |
+| ![Alice cancelled](images/06c-alice-cancelled.png) | ![Bob promoted](images/06d-bob-promoted.png) |
 
 ---
 
