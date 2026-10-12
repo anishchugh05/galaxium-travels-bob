@@ -47,7 +47,7 @@ sequenceDiagram
         B->>DB: UPDATE flights SET seats = seats - 1<br/>WHERE flight_id = 1 AND economy_seats_available > 0
     end
 
-    Note over DB: SQLite serialises writes.<br/>One UPDATE matches; the other sees rowcount=0.
+    Note over DB: SQLite serialises writes.<br/>One UPDATE matches, the other sees rowcount=0.
 
     DB-->>A: rowcount = 1 ✓
     A->>DB: INSERT booking (status='booked')
