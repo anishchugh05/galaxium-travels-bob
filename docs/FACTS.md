@@ -20,7 +20,7 @@
    Before: 2 cancels succeeded, seats 0 → 2 (1 phantom seat). After: 1 succeeded, 1 rejected ALREADY_CANCELLED, seats 1. Fix: UPDATE bookings SET status='cancelled' WHERE id=? AND status='booked'. (a5a64bb)
 7. Bob code review fixes (b81d069): promotion wrapped in a savepoint so a failed promotion no longer blocks the cancel; leave_waitlist race fixed (2 concurrent leaves → exactly 1 succeeds); a cancel test that passed for the wrong reason was corrected.
 8. Postgres compatibility: partial index now has postgresql_where as well as sqlite_where.
-9. Java hold service — skill found 6 issues, we fixed 3:
+9. Java hold service — sskill found 6 issues; 4 fixed with 3 changes, 2 skipped:
    - Double-confirm: one hold → Python booking created twice. Before: Python client called 2×. After: 1×. Fix: atomic claim HELD → CONFIRMING before calling Python; revert to HELD on failure.
    - Hold/quote IDs from count()+1 collided under concurrency (primary-key violation). Fix: UUID-based IDs.
    - Expiry scheduler made atomic (bulk conditional UPDATE), closing the confirm-vs-expire race.
