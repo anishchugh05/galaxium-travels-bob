@@ -9,9 +9,10 @@ interface BookingCardProps {
   flight?: Flight;
   onCancel: (bookingId: number) => void;
   isCancelling?: boolean;
+  fromWaitlist?: boolean; // briefly highlight this card if it came from the waitlist
 }
 
-export const BookingCard = ({ booking, flight, onCancel, isCancelling }: BookingCardProps) => {
+export const BookingCard = ({ booking, flight, onCancel, isCancelling, fromWaitlist }: BookingCardProps) => {
   const getSeatClassIcon = () => {
     switch (booking.seat_class) {
       case 'business':
@@ -75,11 +76,11 @@ export const BookingCard = ({ booking, flight, onCancel, isCancelling }: Booking
   return (
     <motion.div
       initial={{ opacity: 0, y: 20 }}
-      animate={{ opacity: 1, y: 0 }}
+      animate={fromWaitlist ? { opacity: 1, y: 0, scale: [1, 1.03, 1] } : { opacity: 1, y: 0 }}
       whileHover={{ y: -2 }}
-      transition={{ duration: 0.2 }}
+      transition={{ duration: fromWaitlist ? 0.6 : 0.2 }}
     >
-      <Card>
+      <Card className={fromWaitlist ? 'ring-2 ring-alien-green/60' : undefined}>
         {/* Header */}
         <div className="flex items-start justify-between mb-4 pb-4 border-b border-white/10">
           <div className="flex items-center gap-3">

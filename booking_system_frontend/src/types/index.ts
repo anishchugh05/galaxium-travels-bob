@@ -81,6 +81,7 @@ export interface WaitlistEntry {
   seat_class: SeatClass;
   status: 'waiting' | 'promoting' | 'booked' | 'cancelled' | 'failed';
   added_at: string;
+  position?: number | null; // 1-based queue position; only set for 'waiting' entries
 }
 
 export interface WaitlistRequest {

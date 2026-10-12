@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import type { Booking, Flight, StoredHold, ErrorResponse, WaitlistEntry } from '../types';
 import { LoadingSpinner, Modal, Button } from '../components/common';
@@ -12,6 +12,35 @@ import { AlertCircle } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { motion } from 'framer-motion';
 
+// ---------------------------------------------------------------------------
+// Promotion tracking helpers (localStorage, keyed by user_id)
+// Bookings created via the waitlist are identified by cross-referencing
+// waitlist entries with status='booked'.  A "seen" set in localStorage
+// prevents the toast from firing again on subsequent page loads.
+// ---------------------------------------------------------------------------
+
+const SEEN_KEY = (userId: number) => `galaxium_seen_promotions_${userId}`;
+
+function getSeenPromotions(userId: number): Set<number> {
+  try {
+    const raw = localStorage.getItem(SEEN_KEY(userId));
+    if (!raw) return new Set();
+    return new Set(JSON.parse(raw) as number[]);
+  } catch {
+    return new Set();
+  }
+}
+
+function markPromotionsSeen(userId: number, bookingIds: number[]): void {
+  try {
+    const existing = getSeenPromotions(userId);
+    bookingIds.forEach((id) => existing.add(id));
+    localStorage.setItem(SEEN_KEY(userId), JSON.stringify([...existing]));
+  } catch {
+    // localStorage unavailable — silently ignore
+  }
+}
+
 export const MyBookings = () => {
   const { user } = useUser();
   const navigate = useNavigate();
@@ -24,6 +53,10 @@ export const MyBookings = () => {
   const [showCancelModal, setShowCancelModal] = useState(false);
   const [bookingToCancel, setBookingToCancel] = useState<number | null>(null);
   const [leavingWaitlistId, setLeavingWaitlistId] = useState<number | null>(null);
+  // Set of booking_ids that came from the waitlist and haven't been shown a toast yet
+  const [newPromotionIds, setNewPromotionIds] = useState<Set<number>>(new Set());
+  // Ref so loadData can read the latest value without re-running the effect
+  const newPromotionIdsRef = useRef<Set<number>>(new Set());
 
   const loadHolds = useCallback(async () => {
     if (!user) return;
@@ -78,6 +111,40 @@ export const MyBookings = () => {
       setFlights(flightsData);
       setWaitlistEntries(waitlistData);
       await loadHolds();
+
+      // --- Promotion detection ---
+      // waitlist entries with status='booked' each correspond to a booking
+      // that was created via the waitlist promotion path.  We cross-reference
+      // those against the booking list and identify any that the user hasn't
+      // seen a toast for yet.
+      // Map of "flight_id:seat_class" → added_at (ISO string) for booked waitlist entries.
+      const bookedWaitlistAddedAt = new Map<string, string>(
+        waitlistData
+          .filter((e) => e.status === 'booked')
+          .map((e) => [`${e.flight_id}:${e.seat_class}`, e.added_at])
+      );
+
+      const seen = getSeenPromotions(user.user_id);
+      const fresh: number[] = [];
+      for (const b of bookingsData) {
+        const waitlistAddedAt = bookedWaitlistAddedAt.get(`${b.flight_id}:${b.seat_class}`);
+        if (
+          b.status === 'booked' &&
+          !seen.has(b.booking_id) &&
+          waitlistAddedAt !== undefined &&
+          b.booking_time > waitlistAddedAt
+        ) {
+          fresh.push(b.booking_id);
+        }
+      }
+
+      if (fresh.length > 0) {
+        const updated = new Set([...newPromotionIdsRef.current, ...fresh]);
+        newPromotionIdsRef.current = updated;
+        setNewPromotionIds(new Set(updated));
+        markPromotionsSeen(user.user_id, fresh);
+        toast.success('🎉 You got a seat from the waitlist!', { duration: 5000 });
+      }
     } catch (err) {
       toast.error('Failed to load bookings');
       console.error(err);
@@ -276,6 +343,7 @@ export const MyBookings = () => {
                     flight={getFlightForBooking(booking)}
                     onCancel={handleCancelClick}
                     isCancelling={cancellingId === booking.booking_id}
+                    fromWaitlist={newPromotionIds.has(booking.booking_id)}
                   />
                 ))}
               </div>

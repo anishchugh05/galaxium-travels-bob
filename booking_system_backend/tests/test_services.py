@@ -1073,3 +1073,141 @@ class TestFlightFiltering:
 
         results = flight.list_flights(db_session, min_price=10000000)
         assert len(results) == 0
+
+
+class TestWaitlistPosition:
+    """Test the position field returned by get_waitlist_for_user."""
+
+    def _make_flight(self, db_session, economy_seats=0):
+        from datetime import datetime, timezone
+        f = Flight(
+            origin="Earth",
+            destination="Mars",
+            departure_time="2099-06-01 09:00",
+            arrival_time="2099-06-01 17:00",
+            base_price=1000000,
+            economy_seats_available=economy_seats,
+            business_seats_available=0,
+            galaxium_seats_available=0,
+        )
+        db_session.add(f)
+        db_session.commit()
+        return f
+
+    def _make_user(self, db_session, name, email):
+        u = User(name=name, email=email)
+        db_session.add(u)
+        db_session.commit()
+        return u
+
+    def _join(self, db_session, user, flight, seat_class="economy"):
+        from services import waitlist as wl
+        result = wl.join_waitlist(db_session, user.user_id, user.name, flight.flight_id, seat_class)
+        assert not isinstance(result, ErrorResponse), f"join failed: {result}"
+        return result
+
+    def test_single_waiter_is_position_one(self, db_session):
+        """A sole waiter must have position=1."""
+        flight = self._make_flight(db_session)
+        alice = self._make_user(db_session, "Alice", "alice@test.com")
+        self._join(db_session, alice, flight)
+
+        from services import waitlist as wl
+        entries = wl.get_waitlist_for_user(db_session, alice.user_id)
+        assert len(entries) == 1
+        assert entries[0].status == "waiting"
+        assert entries[0].position == 1
+
+    def test_positions_are_fifo(self, db_session):
+        """Three waiters join in order; positions must be 1, 2, 3."""
+        flight = self._make_flight(db_session)
+        alice = self._make_user(db_session, "Alice", "alice@test.com")
+        bob = self._make_user(db_session, "Bob", "bob@test.com")
+        carol = self._make_user(db_session, "Carol", "carol@test.com")
+
+        self._join(db_session, alice, flight)
+        self._join(db_session, bob, flight)
+        self._join(db_session, carol, flight)
+
+        from services import waitlist as wl
+        for user, expected_pos in [(alice, 1), (bob, 2), (carol, 3)]:
+            entries = wl.get_waitlist_for_user(db_session, user.user_id)
+            waiting = [e for e in entries if e.status == "waiting"]
+            assert len(waiting) == 1, f"{user.name} should have 1 waiting entry"
+            assert waiting[0].position == expected_pos, (
+                f"{user.name}: expected position {expected_pos}, got {waiting[0].position}"
+            )
+
+    def test_position_recalculates_after_leave(self, db_session):
+        """When the first waiter leaves, the second moves up to position 1."""
+        flight = self._make_flight(db_session)
+        alice = self._make_user(db_session, "Alice", "alice@test.com")
+        bob = self._make_user(db_session, "Bob", "bob@test.com")
+
+        alice_entry = self._join(db_session, alice, flight)
+        self._join(db_session, bob, flight)
+
+        # Alice leaves.
+        from services import waitlist as wl
+        wl.leave_waitlist(db_session, alice_entry.waitlist_id, alice.user_id)
+
+        # Bob is now #1.
+        entries = wl.get_waitlist_for_user(db_session, bob.user_id)
+        waiting = [e for e in entries if e.status == "waiting"]
+        assert len(waiting) == 1
+        assert waiting[0].position == 1
+
+    def test_position_is_per_flight_and_class(self, db_session):
+        """Position is scoped to the same flight+seat_class.
+
+        Alice waits for economy on flight 1.
+        Bob waits for economy on flight 1 AND business on flight 1.
+        Bob's economy position should be 2; business position should be 1.
+        """
+        from models import Flight as FlightModel
+        f = FlightModel(
+            origin="Earth", destination="Mars",
+            departure_time="2099-06-01 09:00", arrival_time="2099-06-01 17:00",
+            base_price=1000000,
+            economy_seats_available=0,
+            business_seats_available=0,
+            galaxium_seats_available=0,
+        )
+        db_session.add(f)
+        db_session.commit()
+
+        alice = self._make_user(db_session, "Alice", "alice@test.com")
+        bob = self._make_user(db_session, "Bob", "bob@test.com")
+
+        self._join(db_session, alice, f, "economy")
+        self._join(db_session, bob, f, "economy")
+        self._join(db_session, bob, f, "business")
+
+        from services import waitlist as wl
+        bob_entries = wl.get_waitlist_for_user(db_session, bob.user_id)
+        pos_by_class = {e.seat_class: e.position for e in bob_entries if e.status == "waiting"}
+        assert pos_by_class["economy"] == 2, "Bob should be #2 for economy"
+        assert pos_by_class["business"] == 1, "Bob should be #1 for business"
+
+    def test_non_waiting_entries_have_no_position(self, db_session):
+        """Entries with status other than 'waiting' must have position=None."""
+        from models import Waitlist as WaitlistModel
+        from datetime import datetime, timezone
+        flight = self._make_flight(db_session)
+        alice = self._make_user(db_session, "Alice", "alice@test.com")
+
+        # Directly insert a 'booked' entry (simulates a promoted user).
+        db_session.add(WaitlistModel(
+            user_id=alice.user_id,
+            flight_id=flight.flight_id,
+            seat_class="economy",
+            status="booked",
+            added_at=datetime.now(tz=timezone.utc).isoformat(),
+        ))
+        db_session.commit()
+
+        from services import waitlist as wl
+        entries = wl.get_waitlist_for_user(db_session, alice.user_id)
+        assert len(entries) == 1
+        assert entries[0].status == "booked"
+        assert entries[0].position is None

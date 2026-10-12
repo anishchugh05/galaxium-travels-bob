@@ -72,7 +72,7 @@ Everything below was changed from IBM's original [`galaxium-travels`](https://gi
 - **Postgres compatibility** — partial unique index now includes `postgresql_where` as well as `sqlite_where`
 - **`race-detective` Bob skill** — `.bob/skills/race-detective/` (commit `737dd7f`): 4 files, reusable across any repo
 - **Code-review fixes** — promotion isolated in a savepoint so a failure never blocks a cancel; `leave_waitlist` race fixed (commit `b81d069`)
-- **Full test suite** — Python 97/97, Java 125/125, E2E 10/10 (all green)
+- **Full test suite** — Python 102/102, Java 125/125, E2E 10/10 (all green)
 
 ---
 
@@ -102,7 +102,7 @@ Alice books the last Galaxium seat. Bob joins the waitlist. Alice cancels. Bob i
 **Run the tests:**
 
 ```bash
-# Python backend (97/97)
+# Python backend (102/102)
 cd booking_system_backend && .venv/bin/pytest
 
 # Java hold service (125/125)
@@ -114,7 +114,7 @@ cd booking_system_inventory_hold_service && mvn test
 E2E_RUN_SLOW=1 ./test.sh  # 10/10
 ```
 
-Final counts: **Python 97/97 · Java 125/125 · E2E 10/10**
+Final counts: **Python 102/102 · Java 125/125 · E2E 10/10**
 
 ---
 

@@ -5,7 +5,7 @@
 - Base app: IBM/galaxium-travels (React frontend, Python FastAPI + SQLite backend, Java Spring Boot hold service)
 - Repo: https://github.com/anishchugh05/galaxium-travels-bob
 - Live demo: https://galaxium-travels-bob-production.up.railway.app (Railway, 3 services, SQLite)
-- Final test counts: Python 97/97, Java 125/125, E2E 10/10 (incl. slow hold-expiry test)
+- Final test counts: Python 102/102, Java 125/125, E2E 10/10 (incl. slow hold-expiry test)
 
 ## Fixes and features (in order)
 1. book_flight oversell (lost update). Test: 20 concurrent bookings on 5 economy seats.
@@ -50,3 +50,6 @@
 
 ## Bob features used
 Ask mode (exploration), Plan mode (waitlist design), Agent mode (implementation), custom Skill (race-detective), Code review, AI commit messages, AGENTS.md context.
+
+## Improvements Made 
+- Waitlist polish — queue position ("You're #N in line") and a "You got a seat!" toast on promotion

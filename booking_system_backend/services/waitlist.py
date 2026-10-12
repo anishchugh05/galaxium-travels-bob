@@ -127,12 +127,32 @@ def join_waitlist(
 
 
 def get_waitlist_for_user(db: Session, user_id: int) -> list[WaitlistOut]:
-    """Return all active (non-cancelled, non-failed) waitlist entries for a user."""
+    """Return all active (non-cancelled, non-failed) waitlist entries for a user.
+
+    'waiting' entries include a 1-based `position` (their rank among all 'waiting'
+    entries for the same flight+seat_class, ordered by waitlist_id).  Entries in
+    other statuses (promoting, booked) get position=None.
+    """
     entries = db.query(Waitlist).filter(
         Waitlist.user_id == user_id,
         Waitlist.status.notin_(['cancelled', 'failed']),
     ).all()
-    return [WaitlistOut.model_validate(e) for e in entries]
+
+    results: list[WaitlistOut] = []
+    for entry in entries:
+        out = WaitlistOut.model_validate(entry)
+        if entry.status == 'waiting':
+            # Count how many 'waiting' entries for the same flight+class have a
+            # lower waitlist_id — that gives the 0-based rank; add 1 for 1-based.
+            rank = db.query(Waitlist).filter(
+                Waitlist.flight_id == entry.flight_id,
+                Waitlist.seat_class == entry.seat_class,
+                Waitlist.status == 'waiting',
+                Waitlist.waitlist_id < entry.waitlist_id,
+            ).count()
+            out.position = rank + 1
+        results.append(out)
+    return results
 
 
 def leave_waitlist(

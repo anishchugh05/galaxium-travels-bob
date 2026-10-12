@@ -94,6 +94,7 @@ class WaitlistOut(BaseModel):
     seat_class: str
     status: str
     added_at: str
+    position: int | None = None  # 1-based queue position among 'waiting' entries; None if not waiting
 
     model_config = ConfigDict(from_attributes=True)
 

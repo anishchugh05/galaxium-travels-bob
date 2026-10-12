@@ -94,7 +94,7 @@ While running the Java test suite I hit a failure in `HoldTest.testEqualsAndHash
 
 ## 12. Ship it
 
-I deployed all three services to Railway. Final counts: Python 97/97, Java 125/125, E2E 10/10 (including the slow hold-expiry test). The live app is at [galaxium-travels-bob-production.up.railway.app](https://galaxium-travels-bob-production.up.railway.app).
+I deployed all three services to Railway. Final counts: Python 102/102, Java 125/125, E2E 10/10 (including the slow hold-expiry test). The live app is at [galaxium-travels-bob-production.up.railway.app](https://galaxium-travels-bob-production.up.railway.app).
 
 ---
 

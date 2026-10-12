@@ -64,7 +64,9 @@ export const WaitlistCard = ({ entry, flight, onLeave, isLeaving }: WaitlistCard
               <div className="flex items-center gap-2 mt-1">
                 <Clock className="text-solar-orange" size={16} />
                 <span className="text-sm font-semibold text-solar-orange">
-                  Waiting for a seat
+                  {entry.position != null
+                    ? `You're #${entry.position} in line`
+                    : 'Waiting for a seat'}
                 </span>
               </div>
             </div>
