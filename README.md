@@ -1,298 +1,143 @@
-# Galaxium Travels — Interplanetary Booking System
+# Galaxium Travels × IBM Bob — Race Detective
 
-A demo multi-service application for booking interplanetary space travel. Its purpose is to **showcase challenges agents face in a real enterprise-style codebase** — three polyglot services, cross-service workflows, a dual REST + MCP backend, and intentional architectural constraints that make it interesting to work with.
+**We used Bob to find, prove, and fix concurrency bugs in an unfamiliar 3-service app — then turned the method into a reusable Bob skill that found a bug we'd missed.**
 
-## 🌟 Features
+---
 
-- 🚀 **Book flights across the solar system** — search routes between Earth, Mars, the Moon, Venus, Jupiter, Europa, and Pluto
-- 💺 **Three seat classes** — Economy, Business, and Galaxium, each with independent seat counters and their own pricing multipliers
-- ⏳ **Quote & hold workflow** — reserve a seat with a time-limited hold before committing to a booking, powered by a dedicated Java microservice
-- 🤖 **Dual REST + MCP backend** — every booking operation is accessible as a standard REST endpoint *and* as an MCP tool, so AI agents can interact with the system natively
-- 📡 **Live seat availability** — sold-out classes don't block other classes; availability updates in real time as bookings and holds are created or cancelled
-- 🗓️ **Full booking lifecycle** — create, view, and cancel bookings; holds auto-expire after 15 minutes if not confirmed
-- 🌍 **10 demo travellers, 10 routes, 20 pre-seeded bookings** — ready to explore the moment you start the app
-- ☁️ **Deployable everywhere** — one-command local start, Docker Compose, AWS ECS + Terraform, and IBM Code Engine
+[**Live demo**](https://galaxium-travels-bob-production.up.railway.app) · Track: **Theme 1 — Explore, Fix, and Build** · [Full story](docs/STORY.md)
 
-## Architecture
+---
 
-```
-galaxium-travels/
-├── booking_system_backend/              Python 3 / FastAPI + FastMCP
-│   ├── server.py                          REST API, MCP tools, Java proxy endpoints
-│   ├── services/{booking,flight,user}.py  Business logic
-│   ├── models.py                          SQLAlchemy ORM models
-│   ├── schemas.py                         Pydantic request/response schemas
-│   ├── db.py                              Engine, SessionLocal, get_db()
-│   ├── seed.py                            Demo data seeding
-│   └── tests/                             pytest suite (in-memory SQLite, StaticPool)
-│
-├── booking_system_inventory_hold_service/ Java 17 / Spring Boot 3.4
-│   └── src/main/java/com/galaxium/holdservice/
-│       ├── api/           REST controllers (Quote, Hold, Health)
-│       ├── domain/        JPA entities (Quote, Hold, AuditEvent)
-│       ├── service/       Business logic (QuoteService, HoldService, PricingService)
-│       ├── scheduler/     HoldExpirationScheduler (runs every 60 s)
-│       └── client/        PythonBackendClient → /internal/bookings/from-hold
-│
-├── booking_system_frontend/             React 19 / TypeScript / Vite / Tailwind
-│   └── src/
-│       ├── pages/           Flights, Home, MyBookings
-│       ├── components/      Reusable UI components
-│       ├── services/        API calls (api.ts)
-│       ├── hooks/           Custom React hooks
-│       └── types/           Shared TypeScript types
-│
-├── e2e/                                 Black-box pytest suite
-│   ├── docker-compose.e2e.yml           Isolated stack (ports 18001/18082, SQLite)
-│   ├── run.sh / run-native.sh           Docker and native runners
-│   ├── test_smoke.py                    Health, flights, booking happy/sad paths
-│   └── test_holds.py                    Full quote → hold → confirm cross-service flow
-│
-├── scripts/
-│   ├── aws/         ECS/ALB deploy, scale, teardown
-│   ├── ibm/         IBM Code Engine deploy, status, teardown
-│   ├── local/       start_locally.sh, test-containers.sh
-│   └── terraform/   Terraform HCL — VPC, ECS, ALB, ECR, IAM, CloudWatch, RDS
-│
-├── docker-compose.yml                   Backend + frontend + optional Java hold service
-├── start.sh                             Local dev quick-start wrapper
-├── test.sh                              E2E test suite wrapper
-├── reset.sh                             Post-demo cleanup
-└── AGENTS.md                            Critical patterns for AI agents
-```
+## The headline
 
-### Request flow (quote → hold → booking)
+Five concurrency bugs found and fixed — two by hand with Bob, three by the race-detective skill.
 
-```
-Frontend → POST /quotes        (Python proxy)
-         → Java POST /api/v1/quotes
-         → Java POST /api/v1/quotes/{id}/holds
-         → (on confirm) Java POST Python /internal/bookings/from-hold
-         → real booking created in Python DB
-```
+| Bug | Before | After | Found by |
+|---|---|---|---|
+| `book_flight` oversell — lost update | 20 bookings on 5 seats succeeded; 3–4 seats still showed available (varies run to run) | 5 succeeded, 15 rejected, 0 remaining | Me + Bob (manual) |
+| `cancel_booking` seat-restore — lost update | 10 concurrent cancels of different bookings restored only 2 seats | 10 cancels → exactly 10 seats restored | Me + Bob (manual) |
+| `cancel_booking` double-cancel — same booking | 2 cancels both succeeded; seats 0 → 2 (1 phantom seat) | 1 succeeded, 1 rejected `ALREADY_CANCELLED`; seats = 1 | **race-detective skill** |
+| Java double-confirm — hold service | One hold → Python booking endpoint called 2× → two bookings from one hold | Atomic `HELD → CONFIRMING` claim; Python called 1× | race-detective skill |
+| Java ID collision — hold/quote PK | `count()+1` under concurrency → primary-key violation | UUID-based IDs; collision-free | race-detective skill |
 
-## Quick start
+<!-- TODO: demo GIF -->
 
-**Prerequisites:** Python 3.8+, Node.js 18+. For the Java hold service: Java 17 or 21 and Maven. For Docker Compose: see the [Docker on macOS notes](#docker-on-macos) below.
+---
 
-### Option 1 — One command (recommended for local dev)
+## What we built
+
+- **Concurrency fixes** — atomic conditional `UPDATE … WHERE <guard>` across Python (oversell, seat-restore, double-cancel) and Java (double-confirm, ID collision, expiry scheduler).
+- **Waitlist feature** — join when a class is sold out; on cancel, the first waiter is promoted atomically in the same transaction. FIFO by PK, partial unique index, savepoint isolation.
+- **`race-detective` Bob skill** — a 4-phase reusable skill (Scan → Report → Prove → Fix) with a hard test-first rule; re-ran on IBM's original code and found the double-cancel we had never looked for.
+
+---
+
+## How Bob was used
+
+| Bob feature | What for | Evidence |
+|---|---|---|
+| Ask mode | Map the 3-service architecture; trace `book_flight()` end-to-end; flag the race condition | [Story §1–2](docs/STORY.md#1-explore) |
+| Plan mode | Design the waitlist feature; reason through transaction boundaries | [Story §6](docs/STORY.md#6-build-on-solid-ground) |
+| Agent mode | Implement fixes and the waitlist (Python + React); write failing concurrency tests | [Story §3–4](docs/STORY.md#3-prove) |
+| Custom Skill | `race-detective` skill — codified the fix workflow; ran on Python and Java codebases | [Story §7–10](docs/STORY.md#7-teach-bob-the-lesson) · [RACE-DETECTIVE.md](docs/RACE-DETECTIVE.md) |
+| Code review | Reviewed the waitlist implementation; caught a real `leave_waitlist` race + a savepoint gap | [Story §9](docs/STORY.md#9-second-opinion) |
+| AI commit messages | Every fix committed with Bob-generated messages tracing the change to the bug | commit history |
+| AGENTS.md context | IBM's existing AGENTS.md gave Bob the repo's footguns and conventions from the first prompt | [AGENTS.md](AGENTS.md) |
+
+---
+
+## Where I challenged Bob
+
+Three strongest examples — full table in [DECISIONS.md § Where Bob was wrong](docs/DECISIONS.md#where-bob-was-wrong):
+
+1. **`with_for_update()` for the waitlist claim** — SQLite silently ignores it, so the race would remain. Used an atomic conditional `UPDATE` + `rowcount` instead.
+2. **`position = MAX + 1` for queue order** — itself racy: two concurrent joiners read the same `MAX` and collide. Used autoincrement PK directly.
+3. **Oversell left seats at −15** — Bob's description; the actual test output showed 3–4 seats. Lost updates collapse writes, they don't subtract below zero.
+
+---
+
+## Improvements made during the hackathon
+
+Everything below was changed from IBM's original [`galaxium-travels`](https://github.com/IBM/galaxium-travels):
+
+- **`book_flight()` oversell fix** — atomic `UPDATE … WHERE economy_seats_available > 0` with rowcount check (commit `742b358`)
+- **`cancel_booking()` seat-restore fix** — atomic `UPDATE flights SET seats = seats + 1` (no read-modify-write)
+- **`cancel_booking()` unknown `seat_class` fix** — refuse with an error; never cancel without restoring the seat (commit `b28bcaa`)
+- **Double-cancel fix** — `UPDATE bookings SET status='cancelled' WHERE id=? AND status='booked'` (commit `a5a64bb`)
+- **Waitlist feature** — backend (commit `c699575`) + React frontend (commit `eb66f99`): join, FIFO promotion, partial unique index, savepoint isolation
+- **Java double-confirm fix** — atomic `HELD → CONFIRMING` state claim before calling Python; revert on failure
+- **Java UUID IDs** — replaced `count()+1` with UUID for hold and quote IDs
+- **Java expiry scheduler** — made atomic via bulk conditional `UPDATE`
+- **Java `Hold` equality** — `@EqualsAndHashCode(of = "holdId")` replacing Lombok `@Data`'s field-by-field comparison (pre-existing test failure on IBM's untouched code)
+- **Postgres compatibility** — partial unique index now includes `postgresql_where` as well as `sqlite_where`
+- **`race-detective` Bob skill** — `.bob/skills/race-detective/` (commit `737dd7f`): 4 files, reusable across any repo
+- **Code-review fixes** — promotion isolated in a savepoint so a failure never blocks a cancel; `leave_waitlist` race fixed (commit `b81d069`)
+- **Full test suite** — Python 97/97, Java 125/125, E2E 10/10 (all green)
+
+---
+
+## Try it
+
+Alice books the last Galaxium seat. Bob joins the waitlist. Alice cancels. Bob is promoted automatically.
+
+> Use two browser windows (one normal, one incognito) and register both users. If Flight #1 Galaxium is already sold out, use the Galaxium class on another flight.
+
+1. Open the [live demo](https://galaxium-travels-bob-production.up.railway.app).
+2. Sign in as **Alice** → search Earth → Mars → book the last **Galaxium** seat on Flight #1.
+3. Sign in as **Bob** → search the same route → the Galaxium class shows sold out → click **Join waitlist**.
+4. Switch back to Alice → go to My Bookings → cancel the booking.
+5. Switch to Bob → refresh My Bookings → a new **Booking #22** (or similar) appears — Bob was promoted from the waitlist.
+
+---
+
+## Run it locally
 
 ```bash
+# Start all three services
 ./start.sh
 ```
 
-Starts the Python backend (port **8001**), the Java hold service (port **8080**, if Maven and Java 17/21 are available), and the Vite frontend (port **5173**). Press `Ctrl+C` to stop everything.
+> **Java requirement:** the hold service requires **Java 17 or 21**. Java 22+ breaks Lombok and will not build.
 
-### Option 2 — Manual
-
-```bash
-# Backend
-cd booking_system_backend
-python3 -m venv .venv && source .venv/bin/activate
-pip install -r requirements.txt
-python server.py                    # listens on :8001
-
-# Frontend (new terminal)
-cd booking_system_frontend
-npm install
-npm run dev                         # listens on :5173
-
-# Java hold service (new terminal, optional)
-cd booking_system_inventory_hold_service
-mvn spring-boot:run                 # listens on :8080
-```
-
-### Option 3 — Docker Compose
+**Run the tests:**
 
 ```bash
-# Backend + frontend only
-docker compose up
+# Python backend (97/97)
+cd booking_system_backend && .venv/bin/pytest
 
-# Include Java hold service
-docker compose --profile hold-service up
+# Java hold service (125/125)
+cd booking_system_inventory_hold_service && mvn test
+
+# E2E suite — runs natively, no Docker needed (9 tests)
+./test.sh
+# Add the ~90 s hold-expiry test:
+E2E_RUN_SLOW=1 ./test.sh  # 10/10
 ```
 
-The backend container uses **PostgreSQL** (port 5433 on the host) when running via Docker Compose.
+Final counts: **Python 97/97 · Java 125/125 · E2E 10/10**
 
-#### Docker on macOS
+---
 
-[Colima](https://github.com/abiosoft/colima) is the recommended runtime. One-time setup:
+## Docs
 
-```bash
-brew install colima docker docker-compose docker-buildx
-colima start
-```
-
-Add to `~/.docker/config.json` so `docker compose` and `docker buildx` work:
-```jsonc
-{ "cliPluginsExtraDirs": ["/opt/homebrew/lib/docker/cli-plugins"] }
-```
-
-If `docker ps` errors, run `docker context use colima`.
-
-## Service endpoints
-
-| Service | Local | Docker |
-|---|---|---|
-| Frontend | http://localhost:5173 | http://localhost:5173 |
-| Backend REST | http://localhost:8001 | http://localhost:8001 |
-| Swagger UI | http://localhost:8001/docs | http://localhost:8001/docs |
-| MCP endpoint | http://localhost:8001/mcp | http://localhost:8001/mcp |
-| Java hold service | http://localhost:8080 | http://localhost:8082 |
-
-## Key architectural notes
-
-- **MCP server must be created before FastAPI app** — `server.py` instantiates `FastMCP` before `FastAPI` to allow correct lifespan composition. Swapping the order breaks the app.
-- **MCP tools bypass FastAPI DI** — they call `SessionLocal()` and `db.close()` directly; they do not use `Depends(get_db)`.
-- **Service functions return Union types** — `booking.py` returns `BookingOut | ErrorResponse`. Callers check `isinstance(result, ErrorResponse)`.
-- **`book_flight()` validates both `user_id` AND `name`** — intentional non-standard security pattern; name mismatch rejects the booking.
-- **SQLite is the default database** — `DATABASE_URL` env var controls this; unset = SQLite (`./booking.db`). Docker Compose sets it to PostgreSQL.
-- **`SEED_DEMO_DATA=true` re-seeds on every start** (only if the DB is empty). Set to `false` to preserve data across restarts.
-- **Java proxy swallows 404s** — proxy endpoints return `{"error": "..."}` with HTTP 200. Check the body, not just the status code.
-- **`holds.db` and `booking.db` are committed** — they seed local dev; regenerated on startup.
-
-## Demo data
-
-Seeded automatically on first start:
-
-| Entity | Count | Detail |
-|---|---|---|
-| Users | 10 | Alice, Bob, Charlie, Diana, Eve, Frank, Grace, Heidi, Ivan, Judy |
-| Flights | 10 | Routes: Earth ↔ Mars/Moon/Venus/Jupiter/Europa/Pluto |
-| Bookings | 20 | Distributed across economy/business/galaxium, various statuses |
-
-## Seat classes & pricing
-
-| Class | Multiplier | Seat allocation |
-|---|---|---|
-| Economy | 1.0× | 60% |
-| Business | 2.5× | 30% |
-| Galaxium | 5.0× | 10% |
-
-Each class has independent seat counters. A sold-out class doesn't block bookings in other classes.
-
-## MCP tools (AI agent API)
-
-The backend exposes six tools at `/mcp`:
-
-| Tool | Description |
+| Document | What's in it |
 |---|---|
-| `list_flights` | List all available flights |
-| `book_flight` | Book a seat (user_id, name, flight_id, seat_class) |
-| `get_bookings` | Get all bookings for a user |
-| `cancel_booking` | Cancel a booking by ID |
-| `register_user` | Register a new user |
-| `get_user_id` | Look up a user by name + email |
+| [STORY.md](docs/STORY.md) | 13-chapter narrative: how each bug was found, proved, fixed, and what Bob got wrong |
+| [DECISIONS.md](docs/DECISIONS.md) | Every key technical decision with reasoning, tradeoffs, and the full "Where Bob was wrong" table |
+| [RACE-DETECTIVE.md](docs/RACE-DETECTIVE.md) | The reusable Bob skill — how it works, its track record, install instructions, and example prompts |
+| [ARCHITECTURE.md](docs/ARCHITECTURE.md) | System overview, booking and cancel/promotion sequence diagrams, hold and waitlist state machines |
+| [FACTS.md](docs/FACTS.md) | Single source of truth for all numbers, commits, and claims in this repo |
+| [BASE-APP-README.md](docs/BASE-APP-README.md) | IBM's original README for the base `galaxium-travels` app, unchanged |
 
-## Testing
+---
 
-### Backend unit tests
+## Known limitations
 
-```bash
-cd booking_system_backend
-pytest                           # all tests
-pytest -v                        # verbose
-pytest tests/test_services.py    # service layer only
-pytest tests/test_rest.py        # REST endpoints only
-```
+Deliberate tradeoffs documented with proposed next fixes in [DECISIONS.md § Known limitations](docs/DECISIONS.md#known-limitations).
 
-Tests use an in-memory SQLite database with `StaticPool`. `SessionLocal` is patched in **both** `db` and `server` modules — patching only one leaves MCP tools hitting the real DB.
+---
 
-### Frontend
+## Credits
 
-```bash
-cd booking_system_frontend
-npm run build    # TypeScript compile + Vite build
-npm run lint     # ESLint
-```
-
-### End-to-end tests
-
-```bash
-# Native (recommended) — starts backend + Java jar directly, no Docker
-cd e2e && ./run-native.sh
-E2E_RUN_SLOW=1 ./run-native.sh        # include the ~90 s hold auto-expiry test
-
-# Against an already-running stack
-E2E_BASE_URL=http://localhost:8001 ./run-native.sh
-```
-
-Requires the backend venv (`booking_system_backend/.venv`) and a built Java jar (`booking_system_inventory_hold_service/target/inventory-hold-service-1.0.0.jar`, built with Java 17).
-
-`./test.sh` (wraps `e2e/run.sh`) is an alternative — it runs pytest directly, and if `E2E_BASE_URL` is unset it falls back to bringing up the Docker Compose stack in `e2e/docker-compose.e2e.yml`.
-
-Hold duration is shortened to 1 minute in both runners so auto-expiry is testable without a 15-minute wait.
-
-**Coverage:**
-- `test_smoke.py` — health, flight listing, booking happy path, name-mismatch rejection
-- `test_holds.py` — quote → hold → confirm creates a real booking; release; idempotent confirm; unknown quote; auto-expiry
-
-### Java hold service tests
-
-```bash
-cd booking_system_inventory_hold_service
-mvn test
-```
-
-## Deployment
-
-### AWS (ECS + ALB + Terraform)
-
-```bash
-./scripts/aws/deploy-to-aws.sh     # deploy
-./scripts/aws/scale-to-zero.sh     # pause (cost saving)
-./scripts/aws/scale-up.sh          # resume
-./scripts/aws/teardown-aws.sh      # destroy
-```
-
-Terraform HCL lives in `scripts/terraform/`. Infrastructure: VPC, ECS, ALB, ECR, IAM, CloudWatch, RDS.
-
-### IBM Cloud (Code Engine)
-
-```bash
-./scripts/ibm/deploy-to-ibm.sh     # deploy all services
-./scripts/ibm/check-ibm-status.sh  # check status
-./scripts/ibm/teardown-ibm.sh      # tear down
-```
-
-## Reset demo environment
-
-After a demo, reset to a clean state:
-
-```bash
-./reset.sh          # interactive (prompts before each step)
-./reset.sh --force  # non-interactive
-```
-
-Removes demo branches, database files, and build artifacts. See `DEMO_RUNBOOK.md` for the full demo guide.
-
-## Technology stack
-
-| Layer | Technology |
-|---|---|
-| Backend | Python 3, FastAPI, FastMCP, SQLAlchemy, Pydantic, Uvicorn |
-| Database | SQLite (local/e2e) or PostgreSQL (Docker Compose / cloud) |
-| Hold service | Java 17, Spring Boot 3.4, Lombok, SQLite (JPA) |
-| Frontend | React 19, TypeScript, Vite 7, Tailwind CSS 3, Framer Motion, React Router 7, Axios, Lucide |
-| Testing | pytest, pytest-asyncio, pytest-cov (backend); Spring Test (Java); pytest + Docker Compose (e2e) |
-| Infrastructure | Docker, Docker Compose, Terraform (AWS), IBM Code Engine CLI |
-
-## Project conventions
-
-- **Backend:** `snake_case` for functions/variables; `PascalCase` for classes and Pydantic models.
-- **Frontend API errors:** always inspect the `success` field or look for `error` in the body — HTTP status is not reliable (proxy endpoints return HTTP 200 even on errors).
-- **Custom Tailwind tokens:** `space-dark`, `space-blue`, `cosmic-purple`, `nebula-pink`, `alien-green`, `solar-orange`, `star-white` — do not assume standard Tailwind color names.
-- **Java:** Lombok `@Data`/`@Builder`/`@RequiredArgsConstructor` throughout; no manual getters/setters. Service methods are `@Transactional`.
-- **New backend endpoints:** add a REST handler **and** a matching MCP tool, following the pattern in `server.py`.
-- **Never edit:** `booking_system_inventory_hold_service/target/` (Maven output), `booking_system_frontend/dist/` (Vite output), `scripts/terraform/.terraform/` (provider binaries).
-
-## Further reading
-
-- **[AGENTS.md](AGENTS.md)** — critical non-obvious patterns, footguns, and testing constraints for AI agents
-- **[DEMO_RUNBOOK.md](DEMO_RUNBOOK.md)** — step-by-step demo guide (Bob Shell / GitHub Actions PR review demo)
-- **[e2e/README.md](e2e/README.md)** — e2e test knobs and coverage details
-- **[scripts/README.md](scripts/README.md)** — deployment script reference
-
-## License
-
-See [LICENSE](LICENSE).
+Base app by **IBM** ([IBM/galaxium-travels](https://github.com/IBM/galaxium-travels)).  
+Stack: React 19 + TypeScript + Vite · Python FastAPI + SQLite · Java 17 Spring Boot 3 · IBM Bob.
