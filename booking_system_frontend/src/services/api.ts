@@ -182,6 +182,27 @@ export const leaveWaitlist = async (
   return response.data;
 };
 
+// ==================== Race Lab Demo Endpoints ====================
+
+export interface RaceLabUser {
+  user_id: number;
+  name: string;
+  email: string;
+}
+
+export interface RaceLabResetResult {
+  flight_id: number;
+  users: RaceLabUser[];
+}
+
+/**
+ * Reset the Race Lab demo flight and return flight_id + 20 racer users.
+ */
+export const resetRaceLab = async (): Promise<RaceLabResetResult> => {
+  const response = await api.post<RaceLabResetResult>('/demo/race-lab/reset');
+  return response.data;
+};
+
 // ==================== Quote & Hold Endpoints (Java Inventory Hold Service) ====================
 
 export interface CreateQuoteRequest {

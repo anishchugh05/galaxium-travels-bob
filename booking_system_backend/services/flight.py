@@ -5,6 +5,7 @@ from sqlalchemy.orm import Session
 
 from models import Flight
 from schemas import ErrorResponse, FlightOut
+from services.race_lab import DEMO_FLIGHT_ORIGIN
 
 
 def _flight_to_out(f: Flight) -> FlightOut:
@@ -87,8 +88,8 @@ def list_flights(
     Returns:
         List of FlightOut objects with computed prices for all seat classes
     """
-    query = db.query(Flight)
-    
+    query = db.query(Flight).filter(Flight.origin != DEMO_FLIGHT_ORIGIN)
+
     # Basic filters from main branch
     if origin:
         query = query.filter(Flight.origin.ilike(f'%{origin}%'))

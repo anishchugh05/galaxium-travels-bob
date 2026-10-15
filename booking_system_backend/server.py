@@ -20,7 +20,7 @@ from schemas import (
     WaitlistRequest,
 )
 from seed import seed
-from services import booking, flight, user, waitlist
+from services import booking, flight, race_lab, user, waitlist
 
 # Load environment variables from .env file
 load_dotenv()
@@ -367,6 +367,23 @@ async def release_hold(hold_id: str):
             return response.json()
         except httpx.HTTPError as e:
             return {"error": f"Failed to release hold: {e!s}"}
+
+
+# ==================== RACE LAB DEMO ENDPOINTS ====================
+
+
+@app.post("/demo/race-lab/reset", tags=["Demo"])
+def reset_race_lab_endpoint(db: Session = Depends(get_db)):
+    """Reset the Race Lab demo flight to 5 economy seats and ensure 20 racer users exist.
+
+    Creates the demo flight if it does not exist, then resets its economy seat count
+    to exactly 5 and deletes any previous bookings on that flight.  The demo flight
+    is hidden from GET /flights so normal users never see it.
+
+    Returns the flight_id and the list of 20 racer users (user_id, name, email).
+    Idempotent: safe to call multiple times.
+    """
+    return race_lab.reset_race_lab(db)
 
 
 # ==================== MCP SERVER (for AI agents) ====================

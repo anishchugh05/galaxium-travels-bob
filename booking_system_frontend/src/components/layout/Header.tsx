@@ -53,6 +53,16 @@ export const Header = () => {
             >
               Flights
             </Link>
+            <Link
+              to="/race-lab"
+              className={`text-sm font-medium transition-colors ${
+                isActive('/race-lab')
+                  ? 'text-alien-green'
+                  : 'text-star-white/70 hover:text-star-white'
+              }`}
+            >
+              Race Lab
+            </Link>
             {user && (
               <Link
                 to="/bookings"
@@ -125,6 +135,16 @@ export const Header = () => {
             }`}
           >
             Flights
+          </Link>
+          <Link
+            to="/race-lab"
+            className={`text-sm font-medium transition-colors ${
+              isActive('/race-lab')
+                ? 'text-alien-green'
+                : 'text-star-white/70 hover:text-star-white'
+            }`}
+          >
+            Race Lab
           </Link>
           {user && (
             <Link
