@@ -72,7 +72,7 @@ Everything below was changed from IBM's original [`galaxium-travels`](https://gi
 - **Postgres compatibility** — partial unique index now includes `postgresql_where` as well as `sqlite_where`
 - **`race-detective` Bob skill** — `.bob/skills/race-detective/` (commit `737dd7f`): 4 files, reusable across any repo
 - **Code-review fixes** — promotion isolated in a savepoint so a failure never blocks a cancel; `leave_waitlist` race fixed (commit `b81d069`)
-- **Full test suite** — Python 102/102, Java 125/125, E2E 10/10 (all green)
+- **Full test suite** — Python 112/112, Java 125/125, E2E 10/10 (all green)
 
 ---
 
@@ -88,6 +88,8 @@ Alice books the last Galaxium seat. Bob joins the waitlist. Alice cancels. Bob i
 4. Switch back to Alice → go to My Bookings → cancel the booking.
 5. Switch to Bob → refresh My Bookings → a new **Booking #22** (or similar) appears — Bob was promoted from the waitlist.
 
+**Fastest way to see it:** open [/race-lab](https://galaxium-travels-bob-production.up.railway.app/race-lab) and hit Fire. 20 real bookings race for 5 seats; exactly 5 win.
+
 ---
 
 ## Run it locally
@@ -102,7 +104,7 @@ Alice books the last Galaxium seat. Bob joins the waitlist. Alice cancels. Bob i
 **Run the tests:**
 
 ```bash
-# Python backend (102/102)
+# Python backend (112/112)
 cd booking_system_backend && .venv/bin/pytest
 
 # Java hold service (125/125)
@@ -114,7 +116,7 @@ cd booking_system_inventory_hold_service && mvn test
 E2E_RUN_SLOW=1 ./test.sh  # 10/10
 ```
 
-Final counts: **Python 102/102 · Java 125/125 · E2E 10/10**
+Final counts: **Python 112/112 · Java 125/125 · E2E 10/10**
 
 ---
 
